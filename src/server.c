@@ -27,6 +27,7 @@
 int is_us(const char *line, size_t *invalid_pos);
 int valid_message(const char *line);
 void log_activity(const char *format, ...);
+int authenticate_user(const char* credentials,char * role);
 
 int main(void) {
     int server_fd, client_fd;
@@ -70,18 +71,49 @@ int main(void) {
 
     log_activity("(%s) Client connected", INFO);
 
-    
+    //Authentication
+    memset(buffer, 0, BUFFER_SIZE);
+    ssize_t bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+
+    if (bytes_read < 0){
+        log_activity("(%s) Failed to receive credentials", ERROR);
+        close(client_fd);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    char* end_pos = strstr(buffer, END_OF_LINE);
+
+    if (!end_pos) {
+        log_activity("(%s) Invalid credentials format", ERROR);
+        close(client_fd);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    char role[BUFFER_SIZE];
+
+    if (!authenticate_user(buffer,role)){
+        log_activity("(%s) Authentication failed", ERROR);
+        close(client_fd);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    //TODO: Validate role (ADMIN or USER only)
+
+    log_activity("(%s) Authentication successful", SUCCESS);
 
     while (TRUE) {
         memset(buffer, 0, BUFFER_SIZE);
-        ssize_t bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+        bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
 
         if (bytes_read <= 0) {
             log_activity("(%s) Client disconnected", INFO);
             break;
         }
 
-        char *end_pos = strstr(buffer, END_OF_LINE);
+        end_pos = strstr(buffer, END_OF_LINE);
         if (!end_pos) {
             log_activity("(%s) Incomplete message received", WARNING);
             continue;
@@ -147,4 +179,33 @@ void log_activity(const char *format, ...) {
 
     fprintf(log_file, "\n");
     fclose(log_file);
+}
+
+
+int authenticate_user(const char* credentials,char* role) {
+    FILE* file = fopen("../src/server/db/auth.txt", "r");
+    if (!file) {
+        perror("ERROR: Could not open users file");
+        log_activity("ERROR: Could not open users file");
+        return FALSE;
+    }
+
+    char line[BUFFER_SIZE];
+    while (fgets(line, sizeof(line), file)) {
+        char stored_user[BUFFER_SIZE], stored_pass[BUFFER_SIZE], stored_type[BUFFER_SIZE],cred[BUFFER_SIZE];
+        if (sscanf(line, "%s %s %s", stored_user, stored_pass, stored_type) == 3) {
+            char formatted_credential[BUFFER_SIZE];
+            snprintf(formatted_credential, BUFFER_SIZE, "%s %s", stored_user, stored_pass);
+            strncpy(cred,credentials, strlen(credentials) - 5);
+
+            if (strncmp(formatted_credential, cred, strlen(formatted_credential)) == 0) {
+                strncpy(role,stored_type, strlen(stored_type));
+                fclose(file);
+                return TRUE;
+            }
+        }
+    }
+
+    fclose(file);
+    return FALSE;
 }
