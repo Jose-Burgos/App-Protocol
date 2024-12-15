@@ -1,1 +1,2 @@
 root root ADMIN
+user user USER
