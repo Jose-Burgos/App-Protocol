@@ -14,6 +14,7 @@
 #define MAX_LINE_LENGTH 100
 #define LOG_FILE_PATH "../src/server/logs/server.logs"
 #define USERS_FILE_PATH "../src/server/db/auth.txt"
+#define CASE_FILE_PATH "../src/server/db/case.txt"
 #define CONFIG_FILE_PATH "../src/server/cfg.properties"
 #define FILES_DIRECTORY_PATH "../src/server/db"
 
@@ -43,19 +44,26 @@ typedef struct {
 client_info_t *connected_clients = NULL;
 int max_clients = 100;
 int current_client_count = 0;
-
+// Estadísticas globales
+int total_connections = 0;
+int incorrect_lines_received = 0;
+int correct_lines_received = 0;
+int incorrect_datagrams_received = 0;
+int total_files_downloaded = 0;
+int total_files_uploaded = 0;
 
 pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
 /* FUNCTION PROTOTYPES */
 int read_port_from_config();
+int read_case_from_config();
 int read_idle_timeout_from_config();
 int is_us(const char *line, size_t *invalid_pos);
 int valid_message(const char *line);
 void log_activity(const char *format, ...);
 int authenticate_user(const char *credentials, char* name, char *role);
 void *handle_client(void *client_socket);
-void parse_command(int client_fd, const char* input, const char* role);
+void parse_command(int client_fd, const char* input, const char* role,int case_on);
 void handle_auth(int client_fd, const char* username, const char* password);
 void handle_list_files(int client_fd);
 void handle_echo(int client_fd, const char* text);
@@ -64,10 +72,19 @@ void handle_client_file_transfer(int client_fd);
 client_info_t* find_client_by_fd(int client_fd);
 int add_client(int client_fd, const char* name, const char* role);
 void remove_client(int client_fd);
+void handle_tcp_connection(int client_fd);
+void handle_udp_datagram(int udp_server_fd);
+void update_case(const char *username, int case_on);
+void handle_get_base64(const int client_fd, const char* filename);
+void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len);
+int analyze_command(char* command,char* value,int case_on);
 
-int main(void) {
+        int main(void) {
     int server_fd;
     struct sockaddr_in server_addr;
+
+    int udp_server_fd;
+    struct sockaddr_in udp_server_addr;
 
     const int port = read_port_from_config();
     if (port == -1) {
@@ -75,6 +92,7 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
+    //TCP Socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("ERROR: Socket creation failed");
         log_activity("(%s) Socket creation failed", ERROR);
@@ -100,39 +118,64 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
+    //UDP Socket
+    if ((udp_server_fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+        perror("ERROR: Socket creation failed");
+        log_activity("(%s) Socket creation failed", ERROR);
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&udp_server_addr, 0, sizeof (udp_server_addr));
+    udp_server_addr.sin_family = AF_INET;
+    udp_server_addr.sin_addr.s_addr = INADDR_ANY;
+    udp_server_addr.sin_port = htons(port);
+
+    if (bind(udp_server_fd, (struct sockaddr *) &udp_server_addr, sizeof(udp_server_addr)) == -1) {
+        perror("ERROR: Bind failed");
+        log_activity("(%s) Bind failed", ERROR);
+        close(udp_server_fd);
+        exit(EXIT_FAILURE);
+    }
+
     log_activity("(%s) Server started and listening on port: %d", INFO, port);
 
+    fd_set read_fds;
+    int max_fd = (server_fd > udp_server_fd) ? server_fd : udp_server_fd;
+
     while (TRUE) {
-        struct sockaddr_in client_addr;
-        socklen_t addr_len = sizeof(client_addr);
-        const int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &addr_len);
 
-        if (client_fd == -1) {
-            perror("ERROR: Accept failed");
-            log_activity("(%s) Accept failed", ERROR);
-            continue;
+        FD_ZERO(&read_fds);
+        FD_SET(server_fd, &read_fds);  // TCP
+        FD_SET(udp_server_fd, &read_fds);  // UDP
+
+        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+
+        if (activity == -1) {
+            perror("ERROR: select() failed");
+            exit(EXIT_FAILURE);
         }
 
-        log_activity("(%s) Client connected", INFO);
+        if (FD_ISSET(server_fd, &read_fds)) {
+            struct sockaddr_in client_addr;
+            socklen_t addr_len = sizeof(client_addr);
+            const int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &addr_len);
+            total_connections++;
 
-        pthread_t thread_id;
-        int *pclient = malloc(sizeof(int));
-        if (!pclient) {
-            log_activity("(%s) Memory allocation failed for client socket", ERROR);
-            close(client_fd);
-            continue;
-        }
-        *pclient = client_fd;
+            if (client_fd == -1) {
+                perror("ERROR: Accept failed");
+                log_activity("(%s) Accept failed", ERROR);
+                continue;
+            }
 
-        if (pthread_create(&thread_id, NULL, handle_client, pclient) != 0) {
-            perror("ERROR: Failed to create thread");
-            log_activity("(%s) Failed to create thread", ERROR);
-            free(pclient);
-            close(client_fd);
-            continue;
+            log_activity("(%s) Client connected", INFO);
+
+            handle_tcp_connection(client_fd);
         }
 
-        pthread_detach(thread_id);
+        if (FD_ISSET(udp_server_fd, &read_fds)) {
+            handle_udp_datagram(udp_server_fd);
+        }
+
     }
     pthread_rwlock_destroy(&rwlock);
     close(server_fd);
@@ -187,6 +230,31 @@ int read_idle_timeout_from_config() {
 
     fclose(file);
     return idle_timeout;
+}
+
+int read_case_from_config(){
+    FILE *file = fopen(CONFIG_FILE_PATH, "r");
+    if (file == NULL) {
+        perror("ERROR: Could not open config file");
+        return -1;
+    }
+
+    char line[BUFFER_SIZE];
+    int port = -1;
+
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "case_sensitive=", 15) == 0) {
+            if (sscanf(line + 15, "%d", &port) != 1) {
+                fprintf(stderr, "ERROR: Invalid case value in config file\n");
+                fclose(file);
+                return -1;
+            }
+            break;
+        }
+    }
+
+    fclose(file);
+    return port;
 }
 
 int is_us(const char *line, size_t *invalid_pos) {
@@ -274,10 +342,12 @@ void *handle_client(void *client_socket) {
             const char *success_msg = "AUTH_OK\\r\\n";
             send(client_fd, success_msg, strlen(success_msg), 0);
             log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
+            correct_lines_received++;
         } else {
             const char *error_msg = "Authentication failed. Try again.\r\n";
             send(client_fd, error_msg, strlen(error_msg), 0);
             log_activity("(%s) Authentication attempt failed", ERROR);
+            incorrect_lines_received++;
         }
 
         last_activity_time = time(NULL);
@@ -308,7 +378,8 @@ void *handle_client(void *client_socket) {
 
         log_activity("(%s) Received message: %s", INFO, buffer);
 
-        parse_command(client_fd,buffer,role);
+        int case_on = read_case_from_config();
+        parse_command(client_fd,buffer,role,case_on);
 
         if (strcmp(buffer, "logout") == 0) {
             const char *logout_msg = "Logged out. Goodbye!\r\n";
@@ -381,19 +452,32 @@ int authenticate_user(const char *credentials, char* name, char *role) {
     return FALSE;
 }
 
-void parse_command(const int client_fd, const char* input,const char* role){
+int analyze_command(char* command,char* value,int case_on){
+    if (case_on){
+        if (strcmp(command,value) == 0)
+            return TRUE;
+    }
+    else{
+        if (strcasecmp(command,value) == 0)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+void parse_command(const int client_fd, const char* input,const char* role,int case_on){
     char buffer[BUFFER_SIZE];
     strncpy(buffer, input, BUFFER_SIZE - 1);
 
     const char* command = strtok(buffer, " ");
 
     if (command == NULL) {
+        incorrect_lines_received++;
         log_activity("(%s) Comando vacío",ERROR);
         return;
     }
 
-    if (strcmp(command, "AUTH") == 0) {
-        if (strcmp(role,"ADMIN") != 0){
+    if (analyze_command(command,"AUTH",case_on)) {
+        if (!analyze_command(role,"ADMIN",case_on)){
             log_activity("(%s) Usted no es un usuario ADMIN",ERROR);
         }
         else{
@@ -406,36 +490,48 @@ void parse_command(const int client_fd, const char* input,const char* role){
                 log_activity("(%s) AUTH requiere un username y password",ERROR);
             }
         }
-    } else if (strcmp(command, "LIST") == 0) {
+    } else if (analyze_command(command, "LIST",case_on)) {
         const char* subcommand = strtok(NULL, "\r\n");
 
-        if (subcommand && strcmp(subcommand, "FILES") == 0) {
+        if (subcommand && analyze_command(subcommand, "FILES",case_on)) {
             handle_list_files(client_fd);
+            correct_lines_received++;
         } else {
             log_activity("(%s) LIST FILES es el único subcomando válido",ERROR);
+            incorrect_lines_received++;
         }
-    } else if (strcmp(command, "ECHO") == 0) {
+    } else if (analyze_command(command, "ECHO",case_on)) {
         const char* text = strtok(NULL, "\r\n");
 
         if (text) {
             handle_echo(client_fd,text);
+            correct_lines_received++;
         } else {
             log_activity("(%s) ECHO requiere texto",ERROR);
+            incorrect_lines_received++;
         }
-    } else if (strcmp(command, "GET") == 0) {
+    } else if (analyze_command(command, "GET",case_on)) {
+        const char* subcommand = strtok(NULL, " ");
         const char* filename = strtok(NULL, "\r\n");
 
-        if (filename) {
-            handle_get(client_fd,filename);
+        if (subcommand && strcasecmp(subcommand, "base64") == 0 && filename) {
+            handle_get_base64(client_fd, filename);
+            correct_lines_received++;
+        } else if (subcommand) {
+            handle_get(client_fd,subcommand);
+            correct_lines_received++;
         } else {
             log_activity("(%s) GET requiere un nombre de archivo",ERROR);
+            incorrect_lines_received++;
         }
     } else if (strcmp(command, "UPLOAD") == 0) {
         handle_client_file_transfer(client_fd);
+        correct_lines_received++;
         log_activity("(%s) File uploaded",INFO);
     }
     else {
         log_activity("(%s) Comando no reconocido",ERROR);
+        incorrect_lines_received++;
     }
 }
 
@@ -539,6 +635,7 @@ void handle_get(const int client_fd, const char* filename){
         send(client_fd,line, strlen(line),0);
     }
 
+    total_files_downloaded++;
     fclose(file);
     pthread_rwlock_unlock(&rwlock);
 }
@@ -605,6 +702,7 @@ void handle_client_file_transfer(int client_fd) {
     }
 
     send(client_fd, "Success", 7, 0);
+    total_files_uploaded++;
 
     fclose(file);
 }
@@ -681,3 +779,248 @@ void cleanup_client_tracking() {
         connected_clients = NULL;
     }
 }
+
+void handle_tcp_connection(int client_fd){
+    pthread_t thread_id;
+    int *pclient = malloc(sizeof(int));
+    if (!pclient) {
+        log_activity("(%s) Memory allocation failed for client socket", ERROR);
+        close(client_fd);
+        return;
+    }
+    *pclient = client_fd;
+
+    if (pthread_create(&thread_id, NULL, handle_client, pclient) != 0) {
+        perror("ERROR: Failed to create thread");
+        log_activity("(%s) Failed to create thread", ERROR);
+        free(pclient);
+        close(client_fd);
+        return;
+    }
+
+    pthread_detach(thread_id);
+}
+
+void handle_udp_datagram(int udp_server_fd) {
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    char role[BUFFER_SIZE] = {0};
+    char name[MAX_CLIENT_NAME] = {0};
+
+    ssize_t recv_len = recvfrom(udp_server_fd, buffer, sizeof(buffer) - 1, 0,
+                                (struct sockaddr *)&client_addr, &addr_len);
+    if (recv_len > 0) {
+        buffer[recv_len] = '\0'; // Asegurar que el buffer está null-terminated
+
+        printf("Received UDP datagram: %s\n", buffer);
+
+        // Separar usuario, password y comando
+        char *username = strtok(buffer, " ");
+        char *password = strtok(NULL, " ");
+        char *command = strtok(NULL, " ");
+
+        if (username && password && command) {
+
+            char credentials[MAX_LINE_LENGTH];
+            sprintf(credentials,"%s %s\r\n",username,password);
+
+            if (!authenticate_user(credentials,name,role)){
+                const char *error_msg = "Authentication failed. Try again.\r\n";
+                sendto(udp_server_fd, error_msg, strlen(error_msg), 0,(struct sockaddr *)&client_addr, addr_len);
+                log_activity("(%s) Authentication attempt failed", ERROR);
+                incorrect_datagrams_received++;
+            }
+            else{
+                const char *success_msg = "Authentication success.\r\n";
+                sendto(udp_server_fd, success_msg, strlen(success_msg), 0,(struct sockaddr *)&client_addr, addr_len);
+                log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
+            }
+
+            // Procesar el comando
+            char response[BUFFER_SIZE];
+            int case_on = read_case_from_config();
+            if (analyze_command(command, "SET",case_on)) {
+                // Leer los argumentos adicionales del comando
+                char *arg1 = strtok(NULL, " ");
+                char *arg2 = strtok(NULL, "\n");
+
+
+                if (arg1 && arg2 && analyze_command(arg1, "case",case_on)) {
+                    if (analyze_command(arg2, "ON",case_on)) {
+                        snprintf(response, sizeof(response), "Case-sensitive mode enabled for %s.", username);
+                        update_case(username,1);
+                    } else if (analyze_command(arg2, "OFF",case_on)) {
+                        snprintf(response, sizeof(response), "Case-sensitive mode disabled for %s.", username);
+                        update_case(username,0);
+                    } else {
+                        snprintf(response, sizeof(response), "Invalid argument for SET case: %s", arg2);
+                    }
+                } else {
+                    snprintf(response, sizeof(response), "Invalid SET command format.");
+                }
+            } else if (analyze_command(command, "STATS\n",case_on)) {
+                send_stats_udp(udp_server_fd, &client_addr, addr_len);
+            } else {
+                snprintf(response, sizeof(response), "Unknown command: %s", command);
+                incorrect_datagrams_received++;
+            }
+
+            // Enviar la respuesta al cliente
+            sendto(udp_server_fd, response, strlen(response), 0,
+                   (struct sockaddr *)&client_addr, addr_len);
+        } else {
+            printf("Malformed datagram: %s\n", buffer);
+            char error_response[] = "Invalid datagram format. Expected <username> <password> <command>";
+            sendto(udp_server_fd, error_response, strlen(error_response), 0,
+                   (struct sockaddr *)&client_addr, addr_len);
+            incorrect_datagrams_received++;
+        }
+    }
+}
+
+void update_case(const char *username, int case_on) {
+    pthread_rwlock_wrlock(&rwlock);
+
+    FILE *file = fopen(CASE_FILE_PATH, "r+");
+    if (!file) {
+        perror("Error opening file");
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    char line[MAX_LINE_LENGTH];
+    long position = 0;
+    int found = 0;
+
+    while (fgets(line, sizeof(line), file)) {
+        char current_username[MAX_CLIENT_NAME];
+        int current_case_on;
+
+        // Parsear la línea actual
+        if (sscanf(line, "%s %d", current_username, &current_case_on) == 2) {
+            if (strcmp(current_username, username) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        // Guarda la posición actual en el archivo
+        position = ftell(file); // Guardamos la posición de la línea encontrada
+    }
+
+    if (found) {
+        // Volver a la posición y escribir sin espacios adicionales
+        fseek(file, position - strlen(line), SEEK_SET); // Volver al inicio de la línea encontrada
+        fprintf(file, "%s %d\n", username, case_on);  // Sobrescribir la línea
+    } else {
+        log_activity("(%s) Client not found", ERROR);
+    }
+
+    fclose(file);
+    pthread_rwlock_unlock(&rwlock);
+}
+
+// ------------- Ej 5 ---------------
+
+void handle_get_base64(const int client_fd, const char* filename) {
+    pthread_rwlock_rdlock(&rwlock);
+
+    char filepath[BUFFER_SIZE];
+    snprintf(filepath, sizeof(filepath), "%s/%s", FILES_DIRECTORY_PATH, filename);
+
+    FILE *file = fopen(filepath, "r");
+    if (!file) {
+        const char *error_msg = "ERROR: File not found\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        log_activity("(%s) File not found: %s", ERROR, filename);
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    // Calcular el tamaño del archivo
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // Leer el contenido del archivo
+    char *file_content = malloc(file_size);
+    if (!file_content) {
+        const char *error_msg = "ERROR: Memory allocation failed\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        log_activity("(%s) Memory allocation failed", ERROR);
+        fclose(file);
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    fread(file_content, 1, file_size, file);
+    fclose(file);
+
+    // Codificar en Base64
+    size_t encoded_size = ((file_size + 2) / 3) * 4 + 1; // Cálculo del tamaño codificado
+    char *encoded_content = malloc(encoded_size + 2); // Agregar espacio para "\r\n"
+    if (!encoded_content) {
+        const char *error_msg = "ERROR: Memory allocation failed\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        log_activity("(%s) Memory allocation failed", ERROR);
+        free(file_content);
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t i, j;
+    for (i = 0, j = 0; i < file_size;) {
+        uint32_t octet_a = i < file_size ? (unsigned char)file_content[i++] : 0;
+        uint32_t octet_b = i < file_size ? (unsigned char)file_content[i++] : 0;
+        uint32_t octet_c = i < file_size ? (unsigned char)file_content[i++] : 0;
+
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+
+        encoded_content[j++] = base64_table[(triple >> 18) & 0x3F];
+        encoded_content[j++] = base64_table[(triple >> 12) & 0x3F];
+        encoded_content[j++] = base64_table[(triple >> 6) & 0x3F];
+        encoded_content[j++] = base64_table[triple & 0x3F];
+    }
+
+    for (size_t padding = 0; padding < (3 - (file_size % 3)) % 3; padding++) {
+        encoded_content[--j] = '=';
+    }
+    encoded_content[j] = '\0';
+
+    // Agregar \r\n al final del contenido codificado
+    strcat(encoded_content, "\r\n");
+
+    // Enviar tamaño del archivo codificado
+    char response_header[BUFFER_SIZE];
+    snprintf(response_header, sizeof(response_header), "OK %zu\r\n", strlen(encoded_content) - 2); // No cuenta el \r\n extra
+    send(client_fd, response_header, strlen(response_header), 0);
+
+    // Enviar contenido codificado en Base64
+    send(client_fd, encoded_content, strlen(encoded_content), 0);
+
+    log_activity("(%s) File sent in Base64: %s", SUCCESS, filename);
+    total_files_downloaded++;
+
+    free(file_content);
+    free(encoded_content);
+    pthread_rwlock_unlock(&rwlock);
+}
+
+void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len) {
+    char stats_message[BUFFER_SIZE];
+    snprintf(stats_message, sizeof(stats_message),
+             "Total Connections: %d\r\n"
+             "Incorrect Lines Received: %d\r\n"
+             "Correct Lines Received: %d\r\n"
+             "Incorrect Datagrams Received: %d\r\n"
+             "Total Files Downloaded: %d\r\n"
+             "Total Files Uploaded: %d\r\n",
+             total_connections, incorrect_lines_received,
+             correct_lines_received, incorrect_datagrams_received,
+             total_files_downloaded, total_files_uploaded);
+
+    sendto(udp_server_fd, stats_message, strlen(stats_message), 0,
+           (struct sockaddr *) client_addr, addr_len);
+}
+
