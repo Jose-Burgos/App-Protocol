@@ -7,13 +7,14 @@
 #include <time.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <dirent.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_LINE_LENGTH 100
 #define LOG_FILE_PATH "../src/server/logs/server.logs"
 #define USERS_FILE_PATH "../src/server/db/auth.txt"
 #define CONFIG_FILE_PATH "../src/server/cfg.properties"
-
+#define FILES_DIRECTORY_PATH "../src/server/db"
 /* STATUS MACROS */
 #define INVALID_LANGUAGE (-2)
 #define TRUE 1
@@ -31,6 +32,8 @@ typedef struct {
     time_t last_activity_time;
 } client_info_t;
 
+pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
 /* FUNCTION PROTOTYPES */
 int read_port_from_config();
 int read_idle_timeout_from_config();
@@ -39,6 +42,11 @@ int valid_message(const char *line);
 void log_activity(const char *format, ...);
 int authenticate_user(const char *credentials, char *role);
 void *handle_client(void *client_socket);
+void parse_command(int client_fd, const char* input, const char* role);
+void handle_auth(int client_fd, const char* username, const char* password);
+void handle_list_files(int client_fd);
+void handle_echo(int client_fd, const char* text);
+void handle_get(int client_fd, const char* filename);
 
 int main(void) {
     int server_fd;
@@ -109,7 +117,7 @@ int main(void) {
 
         pthread_detach(thread_id);
     }
-
+    pthread_rwlock_destroy(&rwlock);
     close(server_fd);
     return 0;
 }
@@ -279,6 +287,8 @@ void *handle_client(void *client_socket) {
 
         log_activity("(%s) Received message: %s", INFO, buffer);
 
+        parse_command(client_fd,buffer,role);
+
         if (strcmp(buffer, "logout") == 0) {
             const char *logout_msg = "Logged out. Goodbye!\r\n";
             send(client_fd, logout_msg, strlen(logout_msg), 0);
@@ -343,5 +353,152 @@ int authenticate_user(const char *credentials, char *role) {
 
     fclose(file);
     return FALSE;
+}
+
+void parse_command(int client_fd, const char* input,const char* role){
+    char buffer[BUFFER_SIZE];
+    strncpy(buffer, input, BUFFER_SIZE - 1);
+
+    char* command = strtok(buffer, " ");
+
+    if (command == NULL) {
+        log_activity("(%s) Comando vacío",ERROR);
+        return;
+    }
+
+    if (strcmp(command, "AUTH") == 0) {
+        if (strcmp(role,"ADMIN") != 0){
+            log_activity("(%s) Usted no es un usuario ADMIN",ERROR);
+        }
+        else{
+            char* username = strtok(NULL, " ");
+            char* password = strtok(NULL, "\r\n");
+
+            if (username && password) {
+                handle_auth(client_fd,username, password);
+            } else {
+                log_activity("(%s) AUTH requiere un username y password",ERROR);
+            }
+        }
+    } else if (strcmp(command, "LIST") == 0) {
+        char* subcommand = strtok(NULL, "\r\n");
+
+        if (subcommand && strcmp(subcommand, "FILES") == 0) {
+            handle_list_files(client_fd);
+        } else {
+            log_activity("(%s) LIST FILES es el único subcomando válido",ERROR);
+        }
+    } else if (strcmp(command, "ECHO") == 0) {
+        char* text = strtok(NULL, "\r\n");
+
+        if (text) {
+            handle_echo(client_fd,text);
+        } else {
+            log_activity("(%s) ECHO requiere texto",ERROR);
+        }
+    } else if (strcmp(command, "GET") == 0) {
+        char* filename = strtok(NULL, "\r\n");
+
+        if (filename) {
+            handle_get(client_fd,filename);
+        } else {
+            log_activity("(%s) GET requiere un nombre de archivo",ERROR);
+        }
+    } else {
+        log_activity("(%s) Comando no reconocido",ERROR);
+    }
+}
+
+void handle_auth(int client_fd,const char* username, const char* password) {
+
+    pthread_rwlock_wrlock(&rwlock);
+
+    FILE* file = fopen(USERS_FILE_PATH, "a");
+    if (!file) {
+        perror("ERROR: Could not open users file for writing");
+        log_activity("(%s) Could not open users file for writing", ERROR);
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    char new_line[100];
+    //TODO: Now only USER role can be created, also need to create ADMIN´s ?
+    snprintf(new_line, sizeof(new_line), "%s %s USER\n", username, password);
+
+    if (fprintf(file, "%s", new_line) < 0) {
+        perror("ERROR: Could not write to users file");
+        log_activity("(%s) Could not write to users file", ERROR);
+    } else {
+        log_activity("New user added successfully: %s\n", username);
+        log_activity("(%s) New user added: %s", SUCCESS, username);
+        char * message = "User added successfully \n";
+        send(client_fd,message, strlen(message),0);
+    }
+    fclose(file);
+    pthread_rwlock_unlock(&rwlock);
+}
+
+void handle_list_files(int client_fd){
+    pthread_rwlock_rdlock(&rwlock);
+
+    DIR* directory = opendir(FILES_DIRECTORY_PATH);
+    if (!directory) {
+        perror("ERROR: Could not open files directory");
+        log_activity("(%s) Could not open files directory", ERROR);
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    struct dirent* entry;
+
+    while ((entry = readdir(directory)) != NULL) {
+        // Ignorar directorios "." y ".."
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            char * message = strcat(entry->d_name,"\n");
+            send(client_fd,message, strlen(message),0);
+        }
+    }
+
+    closedir(directory);
+    pthread_rwlock_unlock(&rwlock);
+}
+
+void handle_echo(int client_fd, const char* text){
+    char * message = strcat(text,"\n");
+    send(client_fd,message, strlen(message),0);
+}
+void handle_get(int client_fd, const char* filename){
+
+    pthread_rwlock_rdlock(&rwlock);
+
+    char buff[BUFFER_SIZE] = FILES_DIRECTORY_PATH;
+    char* path = strcat(strcat(buff,"/"),filename);
+    FILE* file = fopen(path,"r");
+    if (!file) {
+        log_activity("(%s) Could not open (%s) file for reading", ERROR,filename);
+        pthread_rwlock_unlock(&rwlock);
+        return;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char size[MAX_LINE_LENGTH];
+    sprintf(size, "%ld", file_size);
+
+    char aux[50] = "OK ";
+
+    char * message = strcat(strcat(aux,size),"\r\n");
+    send(client_fd, message, strlen(message),0);
+
+    char line[BUFFER_SIZE];
+
+    while(fgets(line,sizeof(line),file)){
+        send(client_fd,line, strlen(line),0);
+    }
+
+    fclose(file);
+    pthread_rwlock_unlock(&rwlock);
 }
 
