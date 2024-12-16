@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <pthread.h>
 #include <dirent.h>
+#include <sys/stat.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_LINE_LENGTH 100
@@ -15,6 +16,7 @@
 #define USERS_FILE_PATH "../src/server/db/auth.txt"
 #define CONFIG_FILE_PATH "../src/server/cfg.properties"
 #define FILES_DIRECTORY_PATH "../src/server/db"
+
 /* STATUS MACROS */
 #define INVALID_LANGUAGE (-2)
 #define TRUE 1
@@ -26,11 +28,22 @@
 #define HINT "HINT"
 #define DEBUG "DEBUG"
 
+#define MAX_CLIENT_NAME 50
+#define MAX_CLIENT_ROLE 20
+
 /* STRUCTS */
 typedef struct {
     int client_fd;
     time_t last_activity_time;
+    char name[MAX_CLIENT_NAME];
+    char role[MAX_CLIENT_ROLE];
 } client_info_t;
+
+/* GLOBAL VARIABLES */
+client_info_t *connected_clients = NULL;
+int max_clients = 100;
+int current_client_count = 0;
+
 
 pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
@@ -40,19 +53,23 @@ int read_idle_timeout_from_config();
 int is_us(const char *line, size_t *invalid_pos);
 int valid_message(const char *line);
 void log_activity(const char *format, ...);
-int authenticate_user(const char *credentials, char *role);
+int authenticate_user(const char *credentials, char* name, char *role);
 void *handle_client(void *client_socket);
 void parse_command(int client_fd, const char* input, const char* role);
 void handle_auth(int client_fd, const char* username, const char* password);
 void handle_list_files(int client_fd);
 void handle_echo(int client_fd, const char* text);
 void handle_get(int client_fd, const char* filename);
+void handle_client_file_transfer(int client_fd);
+client_info_t* find_client_by_fd(int client_fd);
+int add_client(int client_fd, const char* name, const char* role);
+void remove_client(int client_fd);
 
 int main(void) {
     int server_fd;
     struct sockaddr_in server_addr;
 
-    int port = read_port_from_config();
+    const int port = read_port_from_config();
     if (port == -1) {
         fprintf(stderr, "ERROR: Could not read the port from config file\n");
         exit(EXIT_FAILURE);
@@ -88,7 +105,7 @@ int main(void) {
     while (TRUE) {
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
-        int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &addr_len);
+        const int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &addr_len);
 
         if (client_fd == -1) {
             perror("ERROR: Accept failed");
@@ -194,7 +211,7 @@ void log_activity(const char *format, ...) {
         return;
     }
 
-    time_t now = time(NULL);
+    const time_t now = time(NULL);
     char *timestamp = ctime(&now);
     timestamp[strcspn(timestamp, "\n")] = '\0';
 
@@ -209,11 +226,12 @@ void log_activity(const char *format, ...) {
 }
 
 void *handle_client(void *client_socket) {
-    int client_fd = *((int *)client_socket);
+    const int client_fd = *((int *)client_socket);
     free(client_socket);
 
     char buffer[BUFFER_SIZE];
     char role[BUFFER_SIZE] = {0};
+    char name[MAX_CLIENT_NAME] = {0};
     int authenticated = FALSE;
     time_t last_activity_time = time(NULL);
 
@@ -221,7 +239,7 @@ void *handle_client(void *client_socket) {
 
     while (!authenticated) {
         memset(buffer, 0, BUFFER_SIZE);
-        ssize_t bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+        const ssize_t bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
 
         if (time(NULL) - last_activity_time > read_idle_timeout_from_config()) {
             log_activity("(%s) Client idle timeout reached. Closing connection.", INFO);
@@ -246,9 +264,14 @@ void *handle_client(void *client_socket) {
             continue;
         }
 
-        if (authenticate_user(buffer, role)) {
+        if (authenticate_user(buffer, name, role)) {
             authenticated = TRUE;
-            const char *success_msg = "Authentication successful. Welcome!\r\n";
+            if (add_client(client_fd, name, role) == -1) {
+                log_activity("(%s) Could not add client to connected clients list", ERROR);
+                close(client_fd);
+                return NULL;
+            }
+            const char *success_msg = "AUTH_OK\\r\\n";
             send(client_fd, success_msg, strlen(success_msg), 0);
             log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
         } else {
@@ -262,7 +285,7 @@ void *handle_client(void *client_socket) {
 
     while (authenticated) {
         memset(buffer, 0, BUFFER_SIZE);
-        ssize_t bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+        const ssize_t bytes_read = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
 
         if (time(NULL) - last_activity_time > read_idle_timeout_from_config()) {
             log_activity("(%s) Client idle timeout reached. Closing connection.", INFO);
@@ -272,10 +295,8 @@ void *handle_client(void *client_socket) {
         if (bytes_read <= 0) {
             if (bytes_read == 0) {
                 log_activity("(%s) Client disconnected", INFO);
-            } else {
-                log_activity("(%s) Error receiving data from client", ERROR);
+                break;
             }
-            break;
         }
 
         buffer[bytes_read] = '\0';
@@ -300,6 +321,7 @@ void *handle_client(void *client_socket) {
         send(client_fd, response, strlen(response), 0);
 
         last_activity_time = time(NULL);
+        remove_client(client_fd);
     }
 
     close(client_fd);
@@ -307,7 +329,7 @@ void *handle_client(void *client_socket) {
 }
 
 
-int authenticate_user(const char *credentials, char *role) {
+int authenticate_user(const char *credentials, char* name, char *role) {
     if (credentials == NULL || strlen(credentials) == 0) {
         return FALSE;
     }
@@ -344,6 +366,10 @@ int authenticate_user(const char *credentials, char *role) {
 
             if (strcmp(stored_user, user) == 0 && strcmp(stored_pass, pass) == 0) {
                 strncpy(role, stored_type, BUFFER_SIZE - 1);
+                strncpy(name, user, MAX_CLIENT_NAME - 1);
+                name[MAX_CLIENT_NAME - 1] = '\0';
+                strncpy(role, stored_type, MAX_CLIENT_ROLE - 1);
+                role[MAX_CLIENT_ROLE - 1] = '\0';
                 role[BUFFER_SIZE - 1] = '\0';
                 fclose(file);
                 return TRUE;
@@ -355,11 +381,11 @@ int authenticate_user(const char *credentials, char *role) {
     return FALSE;
 }
 
-void parse_command(int client_fd, const char* input,const char* role){
+void parse_command(const int client_fd, const char* input,const char* role){
     char buffer[BUFFER_SIZE];
     strncpy(buffer, input, BUFFER_SIZE - 1);
 
-    char* command = strtok(buffer, " ");
+    const char* command = strtok(buffer, " ");
 
     if (command == NULL) {
         log_activity("(%s) Comando vacío",ERROR);
@@ -371,8 +397,8 @@ void parse_command(int client_fd, const char* input,const char* role){
             log_activity("(%s) Usted no es un usuario ADMIN",ERROR);
         }
         else{
-            char* username = strtok(NULL, " ");
-            char* password = strtok(NULL, "\r\n");
+            const char* username = strtok(NULL, " ");
+            const char* password = strtok(NULL, "\r\n");
 
             if (username && password) {
                 handle_auth(client_fd,username, password);
@@ -381,7 +407,7 @@ void parse_command(int client_fd, const char* input,const char* role){
             }
         }
     } else if (strcmp(command, "LIST") == 0) {
-        char* subcommand = strtok(NULL, "\r\n");
+        const char* subcommand = strtok(NULL, "\r\n");
 
         if (subcommand && strcmp(subcommand, "FILES") == 0) {
             handle_list_files(client_fd);
@@ -389,7 +415,7 @@ void parse_command(int client_fd, const char* input,const char* role){
             log_activity("(%s) LIST FILES es el único subcomando válido",ERROR);
         }
     } else if (strcmp(command, "ECHO") == 0) {
-        char* text = strtok(NULL, "\r\n");
+        const char* text = strtok(NULL, "\r\n");
 
         if (text) {
             handle_echo(client_fd,text);
@@ -397,19 +423,23 @@ void parse_command(int client_fd, const char* input,const char* role){
             log_activity("(%s) ECHO requiere texto",ERROR);
         }
     } else if (strcmp(command, "GET") == 0) {
-        char* filename = strtok(NULL, "\r\n");
+        const char* filename = strtok(NULL, "\r\n");
 
         if (filename) {
             handle_get(client_fd,filename);
         } else {
             log_activity("(%s) GET requiere un nombre de archivo",ERROR);
         }
-    } else {
+    } else if (strcmp(command, "UPLOAD") == 0) {
+        handle_client_file_transfer(client_fd);
+        log_activity("(%s) File uploaded",INFO);
+    }
+    else {
         log_activity("(%s) Comando no reconocido",ERROR);
     }
 }
 
-void handle_auth(int client_fd,const char* username, const char* password) {
+void handle_auth(const int client_fd,const char* username, const char* password) {
 
     pthread_rwlock_wrlock(&rwlock);
 
@@ -431,14 +461,14 @@ void handle_auth(int client_fd,const char* username, const char* password) {
     } else {
         log_activity("New user added successfully: %s\n", username);
         log_activity("(%s) New user added: %s", SUCCESS, username);
-        char * message = "User added successfully \n";
+        const char * message = "User added successfully \n";
         send(client_fd,message, strlen(message),0);
     }
     fclose(file);
     pthread_rwlock_unlock(&rwlock);
 }
 
-void handle_list_files(int client_fd){
+void handle_list_files(const int client_fd){
     pthread_rwlock_rdlock(&rwlock);
 
     DIR* directory = opendir(FILES_DIRECTORY_PATH);
@@ -452,9 +482,8 @@ void handle_list_files(int client_fd){
     struct dirent* entry;
 
     while ((entry = readdir(directory)) != NULL) {
-        // Ignorar directorios "." y ".."
         if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-            char * message = strcat(entry->d_name,"\n");
+            const char * message = strcat(entry->d_name,"\n");
             send(client_fd,message, strlen(message),0);
         }
     }
@@ -463,16 +492,28 @@ void handle_list_files(int client_fd){
     pthread_rwlock_unlock(&rwlock);
 }
 
-void handle_echo(int client_fd, const char* text){
-    char * message = strcat(text,"\n");
-    send(client_fd,message, strlen(message),0);
+void handle_echo(const int client_fd, const char* text) {
+    const size_t message_len = strlen(text) + 2;
+    char *message = malloc(message_len);
+    if (!message) {
+        perror("malloc failed");
+        return;
+    }
+
+    strcpy(message, text);
+    strcat(message, "\n");
+
+    send(client_fd, message, strlen(message), 0);
+
+    free(message);
 }
-void handle_get(int client_fd, const char* filename){
+
+void handle_get(const int client_fd, const char* filename){
 
     pthread_rwlock_rdlock(&rwlock);
 
     char buff[BUFFER_SIZE] = FILES_DIRECTORY_PATH;
-    char* path = strcat(strcat(buff,"/"),filename);
+    const char* path = strcat(strcat(buff,"/"),filename);
     FILE* file = fopen(path,"r");
     if (!file) {
         log_activity("(%s) Could not open (%s) file for reading", ERROR,filename);
@@ -481,7 +522,7 @@ void handle_get(int client_fd, const char* filename){
     }
 
     fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
+    const long file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
     char size[MAX_LINE_LENGTH];
@@ -489,7 +530,7 @@ void handle_get(int client_fd, const char* filename){
 
     char aux[50] = "OK ";
 
-    char * message = strcat(strcat(aux,size),"\r\n");
+    const char * message = strcat(strcat(aux,size),"\r\n");
     send(client_fd, message, strlen(message),0);
 
     char line[BUFFER_SIZE];
@@ -502,3 +543,141 @@ void handle_get(int client_fd, const char* filename){
     pthread_rwlock_unlock(&rwlock);
 }
 
+void create_directory_if_not_exists(const char *dir_name) {
+    struct stat st = {0};
+    if (stat(dir_name, &st) == -1) {
+        if (mkdir(dir_name, 0700) == -1) {
+            perror("Error al crear el directorio");
+            exit(1);
+        }
+    }
+}
+
+void handle_client_file_transfer(int client_fd) {
+    client_info_t *client = find_client_by_fd(client_fd);
+    char buffer[BUFFER_SIZE];
+    char dir_path[256];
+
+    const int bytes_received_info = (int) recv(client_fd, buffer, sizeof(buffer), 0);
+    if (bytes_received_info <= 0) {
+        perror("Error al recibir la información del archivo");
+        return;
+    }
+
+    buffer[bytes_received_info] = '\0';
+
+    char *file_name = strtok(buffer, "|");
+    const char *file_size_str = strtok(NULL, "|");
+    const long file_size = strtol(file_size_str, NULL, 10);
+
+    if (file_name == NULL || file_size <= 0) {
+        perror("Información del archivo no válida");
+        return;
+    }
+
+    snprintf(dir_path, sizeof(dir_path), "../src/server/files/%s", client->name);
+    create_directory_if_not_exists(dir_path);
+
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, file_name);
+
+    FILE *file = fopen(file_path, "wb");
+    if (file == NULL) {
+        perror("Error al abrir el archivo para escritura");
+        send(client_fd, "Error: No se pudo crear el archivo", 32, 0);
+        return;
+    }
+
+    send(client_fd, "READY", 5, 0);
+
+    long total_bytes_received = 0;
+    while (total_bytes_received < file_size) {
+        const int bytes_received = (int) recv(client_fd, buffer, sizeof(buffer), 0);
+        if (bytes_received <= 0) {
+            perror("Error al recibir el archivo");
+            send(client_fd, "Error al recibir el archivo", 27, 0);
+            fclose(file);
+            return;
+        }
+
+        fwrite(buffer, 1, bytes_received, file);
+        total_bytes_received += bytes_received;
+    }
+
+    send(client_fd, "Success", 7, 0);
+
+    fclose(file);
+}
+
+int add_client(const int client_fd, const char* name, const char* role) {
+    pthread_rwlock_wrlock(&rwlock);
+
+    if (current_client_count >= max_clients) {
+        pthread_rwlock_unlock(&rwlock);
+        return FALSE;
+    }
+
+    if (connected_clients == NULL) {
+        connected_clients = malloc(max_clients * sizeof(client_info_t));
+        if (connected_clients == NULL) {
+            pthread_rwlock_unlock(&rwlock);
+            return FALSE;
+        }
+    }
+
+    for (int i = 0; i < max_clients; i++) {
+        if (connected_clients[i].client_fd == 0) {
+            connected_clients[i].client_fd = client_fd;
+            connected_clients[i].last_activity_time = time(NULL);
+            strncpy(connected_clients[i].name, name, MAX_CLIENT_NAME - 1);
+            strncpy(connected_clients[i].role, role, MAX_CLIENT_ROLE - 1);
+
+            current_client_count++;
+            pthread_rwlock_unlock(&rwlock);
+            return TRUE;
+        }
+    }
+
+    pthread_rwlock_unlock(&rwlock);
+    return FALSE;
+}
+
+void remove_client(int client_fd) {
+    pthread_rwlock_wrlock(&rwlock);
+
+    for (int i = 0; i < max_clients; i++) {
+        if (connected_clients[i].client_fd == client_fd) {
+            connected_clients[i].client_fd = 0;
+            memset(connected_clients[i].name, 0, MAX_CLIENT_NAME);
+            memset(connected_clients[i].role, 0, MAX_CLIENT_ROLE);
+
+            current_client_count--;
+            break;
+        }
+    }
+
+    pthread_rwlock_unlock(&rwlock);
+}
+
+client_info_t* find_client_by_fd(const int client_fd) {
+    pthread_rwlock_rdlock(&rwlock);
+
+    for (int i = 0; i < max_clients; i++) {
+        if (connected_clients[i].client_fd == client_fd) {
+            pthread_rwlock_unlock(&rwlock);
+            client_info_t* aux = &connected_clients[i];
+            printf("Client found: %s\n", aux->name);
+            return aux;
+        }
+    }
+
+    pthread_rwlock_unlock(&rwlock);
+    return NULL;
+}
+
+void cleanup_client_tracking() {
+    if (connected_clients) {
+        free(connected_clients);
+        connected_clients = NULL;
+    }
+}
