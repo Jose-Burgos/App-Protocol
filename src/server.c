@@ -9,12 +9,13 @@
 #include <pthread.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_LINE_LENGTH 100
 #define LOG_FILE_PATH "../src/server/logs/server.logs"
 #define USERS_FILE_PATH "../src/server/db/auth.txt"
-#define CASE_FILE_PATH "../src/server/db/case.txt"
+#define CASE_FILE_PATH "../src/server/case.properties"
 #define CONFIG_FILE_PATH "../src/server/cfg.properties"
 #define FILES_DIRECTORY_PATH "../src/server/db"
 
@@ -78,8 +79,9 @@ void update_case(const char *username, int case_on);
 void handle_get_base64(const int client_fd, const char* filename);
 void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len);
 int analyze_command(char* command,char* value,int case_on);
+int get_case_by_user(char* username);
 
-        int main(void) {
+int main(void) {
     int server_fd;
     struct sockaddr_in server_addr;
 
@@ -240,11 +242,11 @@ int read_case_from_config(){
     }
 
     char line[BUFFER_SIZE];
-    int port = -1;
+    int case_sensitive = -1;
 
     while (fgets(line, sizeof(line), file)) {
         if (strncmp(line, "case_sensitive=", 15) == 0) {
-            if (sscanf(line + 15, "%d", &port) != 1) {
+            if (sscanf(line + 15, "%d", &case_sensitive) != 1) {
                 fprintf(stderr, "ERROR: Invalid case value in config file\n");
                 fclose(file);
                 return -1;
@@ -254,7 +256,7 @@ int read_case_from_config(){
     }
 
     fclose(file);
-    return port;
+    return case_sensitive;
 }
 
 int is_us(const char *line, size_t *invalid_pos) {
@@ -378,7 +380,9 @@ void *handle_client(void *client_socket) {
 
         log_activity("(%s) Received message: %s", INFO, buffer);
 
-        int case_on = read_case_from_config();
+        int case_on = get_case_by_user(name);
+        if (case_on == -1)
+            case_on = read_case_from_config();
         parse_command(client_fd,buffer,role,case_on);
 
         if (strcmp(buffer, "logout") == 0) {
@@ -839,7 +843,11 @@ void handle_udp_datagram(int udp_server_fd) {
 
             // Procesar el comando
             char response[BUFFER_SIZE];
-            int case_on = read_case_from_config();
+
+            int case_on = get_case_by_user(username);
+            if (case_on == -1)
+                case_on = read_case_from_config();
+
             if (analyze_command(command, "SET",case_on)) {
                 // Leer los argumentos adicionales del comando
                 char *arg1 = strtok(NULL, " ");
@@ -879,48 +887,51 @@ void handle_udp_datagram(int udp_server_fd) {
     }
 }
 
-void update_case(const char *username, int case_on) {
-    pthread_rwlock_wrlock(&rwlock);
 
-    FILE *file = fopen(CASE_FILE_PATH, "r+");
-    if (!file) {
-        perror("Error opening file");
-        pthread_rwlock_unlock(&rwlock);
-        return;
+void update_case(const char *name, int new_value) {
+    FILE *file = fopen(CASE_FILE_PATH, "r+"); // Abrir archivo en modo lectura/escritura
+    if (file == NULL) {
+        perror("Error al abrir el archivo");
+    }
+    char* username = strtok(name,"=");
+    // Obtener el descriptor de archivo para usar flock
+    int fd = fileno(file);
+    if (flock(fd, LOCK_EX) != 0) { // Bloqueo exclusivo
+        perror("Error al bloquear el archivo");
+        fclose(file);
     }
 
-    char line[MAX_LINE_LENGTH];
-    long position = 0;
-    int found = 0;
+    char buffer[MAX_LINE_LENGTH];
+    long line_start_pos; // Para recordar la posición de inicio de la línea
+    int updated = 0;
 
-    while (fgets(line, sizeof(line), file)) {
-        char current_username[MAX_CLIENT_NAME];
-        int current_case_on;
+    while (fgets(buffer, sizeof(buffer), file)) {
+        line_start_pos = ftell(file) - strlen(buffer);
 
-        // Parsear la línea actual
-        if (sscanf(line, "%s %d", current_username, &current_case_on) == 2) {
-            if (strcmp(current_username, username) == 0) {
-                found = 1;
-                break;
-            }
+        // Dividir la línea en username y valor
+        char *line_username = strtok(buffer, "=");
+        char *line_value = strtok(NULL, "\n");
+
+        if (line_username && strcmp(line_username, username) == 0) {
+            // Mover el puntero al inicio de la línea
+            fseek(file, line_start_pos, SEEK_SET);
+            // Sobrescribir la línea con el nuevo valor
+            fprintf(file, "%s=%d\n", username, new_value);
+            updated = 1;
+            break;
         }
-        // Guarda la posición actual en el archivo
-        position = ftell(file); // Guardamos la posición de la línea encontrada
     }
 
-    if (found) {
-        // Volver a la posición y escribir sin espacios adicionales
-        fseek(file, position - strlen(line), SEEK_SET); // Volver al inicio de la línea encontrada
-        fprintf(file, "%s %d\n", username, case_on);  // Sobrescribir la línea
-    } else {
-        log_activity("(%s) Client not found", ERROR);
-    }
-
+    // Liberar el bloqueo
+    flock(fd, LOCK_UN);
     fclose(file);
-    pthread_rwlock_unlock(&rwlock);
+
+    if (!updated) {
+        fprintf(file, "%s=%d\n", username, new_value);
+    }
 }
 
-// ------------- Ej 5 ---------------
+
 
 void handle_get_base64(const int client_fd, const char* filename) {
     pthread_rwlock_rdlock(&rwlock);
@@ -1024,3 +1035,29 @@ void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_
            (struct sockaddr *) client_addr, addr_len);
 }
 
+int get_case_by_user(char* username){
+    FILE *file = fopen(CASE_FILE_PATH, "r");
+    if (file == NULL) {
+        perror("ERROR: Could not open case file");
+        return -1;
+    }
+
+    char line[BUFFER_SIZE];
+    int case_sensitive = -1;
+
+    char *name;
+    name = strcat(username,"=");
+    int length = strlen(name);
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, name, length) == 0) {
+            if (sscanf(line + length, "%d", &case_sensitive) != 1) {
+                fprintf(stderr, "ERROR: Invalid case value in config file\n");
+                fclose(file);
+                return -1;
+            }
+            break;
+        }
+    }
+    fclose(file);
+    return case_sensitive;
+}
