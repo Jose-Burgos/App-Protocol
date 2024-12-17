@@ -130,7 +130,8 @@ void send_file(int socket_fd, const char *file_path) {
         return;
     }
 
-    char response[BUFFER_SIZE];
+    char response[BUFFER_SIZE] = {0};
+
     if (recv(socket_fd, response, sizeof(response), 0) <= 0 || strcmp(response, "READY") != 0) {
         perror("ERROR: No se recibió confirmación del servidor");
         fclose(file);

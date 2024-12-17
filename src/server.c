@@ -17,7 +17,7 @@
 #define USERS_FILE_PATH "../src/server/db/auth.txt"
 #define CASE_FILE_PATH "../src/server/case.properties"
 #define CONFIG_FILE_PATH "../src/server/cfg.properties"
-#define FILES_DIRECTORY_PATH "../src/server/db"
+#define FILES_DIRECTORY_PATH "../src/server/files"
 
 /* STATUS MACROS */
 #define INVALID_LANGUAGE (-2)
@@ -383,6 +383,7 @@ void *handle_client(void *client_socket) {
         int case_on = get_case_by_user(name);
         if (case_on == -1)
             case_on = read_case_from_config();
+
         parse_command(client_fd,buffer,role,case_on);
 
         if (strcmp(buffer, "logout") == 0) {
@@ -571,7 +572,13 @@ void handle_auth(const int client_fd,const char* username, const char* password)
 void handle_list_files(const int client_fd){
     pthread_rwlock_rdlock(&rwlock);
 
-    DIR* directory = opendir(FILES_DIRECTORY_PATH);
+    client_info_t* client = find_client_by_fd(client_fd);
+
+    char path_to_files[BUFFER_SIZE];
+
+    sprintf(path_to_files,"%s/%s",FILES_DIRECTORY_PATH,client->name);
+
+    DIR* directory = opendir(path_to_files);
     if (!directory) {
         perror("ERROR: Could not open files directory");
         log_activity("(%s) Could not open files directory", ERROR);
@@ -644,13 +651,33 @@ void handle_get(const int client_fd, const char* filename){
     pthread_rwlock_unlock(&rwlock);
 }
 
-void create_directory_if_not_exists(const char *dir_name) {
-    struct stat st = {0};
-    if (stat(dir_name, &st) == -1) {
-        if (mkdir(dir_name, 0700) == -1) {
-            perror("Error al crear el directorio");
-            exit(1);
+void create_directory_if_not_exists(const char *dir_path) {
+    char temp_path[PATH_MAX] = "";
+    char *token;
+    char dir_copy[PATH_MAX];
+
+    // Crear una copia del path porque strtok modifica el string original
+    snprintf(dir_copy, sizeof(dir_copy), "%s", dir_path);
+
+    // Separar el path en tokens según el separador '/'
+    token = strtok(dir_copy, "/");
+    while (token != NULL) {
+        // Concatenar el directorio actual al path temporal
+        strcat(temp_path, token);
+        strcat(temp_path, "/");
+
+        // Verificar si el directorio existe
+        struct stat st = {0};
+        if (stat(temp_path, &st) == -1) {
+            // Si no existe, lo creamos
+            if (mkdir(temp_path, 0700) == -1) {
+                perror("Error al crear el directorio");
+                exit(1);
+            }
         }
+
+        // Pasar al siguiente token
+        token = strtok(NULL, "/");
     }
 }
 
