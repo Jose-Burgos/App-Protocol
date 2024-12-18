@@ -15,11 +15,11 @@
 
 #define BUFFER_SIZE 1024
 #define MAX_LINE_LENGTH 100
-#define LOG_FILE_PATH "../src/server/logs/server.logs"
-#define USERS_FILE_PATH "../src/server/db/auth.txt"
-#define CASE_FILE_PATH "../src/server/case.properties"
-#define CONFIG_FILE_PATH "../src/server/cfg.properties"
-#define FILES_DIRECTORY_PATH "../src/server/files"
+#define LOG_FILE_PATH "../app/logs/server.logs"
+#define USERS_FILE_PATH "../app/db/auth.txt"
+#define CASE_FILE_PATH "../app/config/case.properties"
+#define CONFIG_FILE_PATH "../app/config/cfg.properties"
+#define FILES_DIRECTORY_PATH "../app/files"
 
 /* STATUS MACROS */
 #define INVALID_LANGUAGE (-2)
@@ -391,7 +391,6 @@ void *handle_client(void *client_socket) {
         send(client_fd, response, strlen(response), 0);
 
         last_activity_time = time(NULL);
-        remove_client(client_fd);
     }
 
     close(client_fd);
@@ -490,7 +489,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
             }
         }
     } else if (analyze_command(command, "LIST",case_on)) {
-        const char* subcommand = strtok(NULL, "\r\n");
+        const char* subcommand = strtok(NULL, "\\r\\n");
 
         if (subcommand && analyze_command(subcommand, "FILES",case_on)) {
             handle_list_files(client_fd);
@@ -595,7 +594,7 @@ void handle_list_files(const int client_fd){
 
     char path_to_files[BUFFER_SIZE];
 
-    sprintf(path_to_files,"%s/%s",FILES_DIRECTORY_PATH,client->name);
+    sprintf(path_to_files,"%s/%s",FILES_DIRECTORY_PATH, client->name);
 
     DIR* directory = opendir(path_to_files);
     if (!directory) {
@@ -636,13 +635,21 @@ void handle_echo(const int client_fd, const char* text) {
 
 void handle_get(const int client_fd, const char* filename){
 
+    client_info_t* client = find_client_by_fd(client_fd);
+    if (client == NULL) {
+        log_activity("(%s) Client not found for file transfer", ERROR);
+        return;
+    }
+
     pthread_rwlock_rdlock(&rwlock);
 
-    char buff[BUFFER_SIZE] = FILES_DIRECTORY_PATH;
-    const char* path = strcat(strcat(buff,"/"),filename);
+    char path[BUFFER_SIZE];
+    snprintf(path, sizeof(path), "%s/%s/%s", FILES_DIRECTORY_PATH, client->name, filename);
+
+    log_activity("(%s) Preparing to send file: %s", DEBUG, path);
     FILE* file = fopen(path,"r");
     if (!file) {
-        log_activity("(%s) Could not open (%s) file for reading", ERROR,filename);
+        log_activity("(%s) Could not open (%s) file for reading", ERROR, filename);
         pthread_rwlock_unlock(&rwlock);
         return;
     }
@@ -721,7 +728,7 @@ void handle_client_file_transfer(const int client_fd, const char *file_name, con
     char dir_path[PATH_MAX];
     char file_path[PATH_MAX];
 
-    snprintf(dir_path, sizeof(dir_path), "../src/server/files/%s", client->name);
+    snprintf(dir_path, sizeof(dir_path), "../app/files/%s", client->name);
     create_directory_if_not_exists(dir_path);
 
     snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, file_name);
