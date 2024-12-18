@@ -1,49 +1,91 @@
-[Sun Dec 15 07:07:47 2024] (INFO) Client connected
-[Sun Dec 15 07:07:47 2024] (INFO) New client connection established
-[Sun Dec 15 07:07:52 2024] (DEBUG) Received credentials: root root\r\n
-[Sun Dec 15 07:07:52 2024] (DEBUG) User: root, Password: root\r\n
-[Sun Dec 15 07:07:52 2024] (DEBUG) Comparing: 'root root' with 'root root\r\n'
-[Sun Dec 15 07:07:52 2024] (ERROR) Authentication attempt failed
-[Sun Dec 15 07:08:04 2024] (INFO) Client disconnected during authentication
-[Sun Dec 15 07:08:05 2024] (INFO) Server started and listening on port: 8080
-[Sun Dec 15 07:08:08 2024] (INFO) Client connected
-[Sun Dec 15 07:08:08 2024] (INFO) New client connection established
-[Sun Dec 15 07:08:12 2024] (DEBUG) Received credentials: root root\r\n
-[Sun Dec 15 07:08:12 2024] (DEBUG) Removing trailing newline character
-[Sun Dec 15 07:08:12 2024] (DEBUG) User: root, Password: root
-[Sun Dec 15 07:08:12 2024] (DEBUG) Comparing: 'root root' with 'root root'
-[Sun Dec 15 07:08:12 2024] (SUCCESS) User authenticated with role: ADMIN
-[Sun Dec 15 07:08:15 2024] (INFO) Client disconnected
-[Sun Dec 15 07:08:18 2024] (INFO) Client connected
-[Sun Dec 15 07:08:18 2024] (INFO) New client connection established
-[Sun Dec 15 07:08:21 2024] (DEBUG) Received credentials: root root \r\n
-[Sun Dec 15 07:08:21 2024] (DEBUG) Removing trailing newline character
-[Sun Dec 15 07:08:21 2024] (DEBUG) User: root, Password: root
-[Sun Dec 15 07:08:21 2024] (DEBUG) Comparing: 'root root' with 'root root'
-[Sun Dec 15 07:08:21 2024] (SUCCESS) User authenticated with role: ADMIN
-[Sun Dec 15 07:08:23 2024] (INFO) Client disconnected
-[Sun Dec 15 07:08:25 2024] (INFO) Client connected
-[Sun Dec 15 07:08:25 2024] (INFO) New client connection established
-[Sun Dec 15 07:08:28 2024] (DEBUG) Received credentials: root root      \r\n
-[Sun Dec 15 07:08:28 2024] (DEBUG) Removing trailing newline character
-[Sun Dec 15 07:08:28 2024] (DEBUG) User: root, Password: root
-[Sun Dec 15 07:08:28 2024] (DEBUG) Comparing: 'root root' with 'root root'
-[Sun Dec 15 07:08:28 2024] (SUCCESS) User authenticated with role: ADMIN
-[Sun Dec 15 07:08:32 2024] (INFO) Client disconnected
-[Sun Dec 15 07:08:44 2024] (INFO) Client connected
-[Sun Dec 15 07:08:44 2024] (INFO) New client connection established
-[Sun Dec 15 07:08:48 2024] (INFO) Client connected
-[Sun Dec 15 07:08:48 2024] (INFO) New client connection established
-[Sun Dec 15 07:08:53 2024] (DEBUG) Received credentials: root root \r\n
-[Sun Dec 15 07:08:53 2024] (DEBUG) Removing trailing newline character
-[Sun Dec 15 07:08:53 2024] (DEBUG) User: root, Password: root
-[Sun Dec 15 07:08:53 2024] (DEBUG) Comparing: 'root root' with 'root root'
-[Sun Dec 15 07:08:53 2024] (SUCCESS) User authenticated with role: ADMIN
-[Sun Dec 15 07:08:57 2024] (DEBUG) Received credentials: user user \r\n
-[Sun Dec 15 07:08:57 2024] (DEBUG) Removing trailing newline character
-[Sun Dec 15 07:08:57 2024] (DEBUG) User: user, Password: user
-[Sun Dec 15 07:08:57 2024] (DEBUG) Comparing: 'root root' with 'user user'
-[Sun Dec 15 07:08:57 2024] (DEBUG) Comparing: 'user user' with 'user user'
-[Sun Dec 15 07:08:57 2024] (SUCCESS) User authenticated with role: USER
-[Sun Dec 15 07:09:01 2024] (INFO) Client disconnected
-[Sun Dec 15 07:09:01 2024] (INFO) Client disconnected
+[Wed Dec 18 10:17:51 2024] (INFO) Client connected
+[Wed Dec 18 10:17:51 2024] (INFO) New client connection established
+[Wed Dec 18 10:17:58 2024] (DEBUG) Received credentials: root root
+[Wed Dec 18 10:17:58 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:17:58 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:17:58 2024] (INFO) Client added: root (fd: 5, total clients: 1)
+[Wed Dec 18 10:17:58 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:17:58 2024] (INFO) Client disconnected
+[Wed Dec 18 10:18:17 2024] (INFO) Client connected
+[Wed Dec 18 10:18:17 2024] (INFO) New client connection established
+[Wed Dec 18 10:18:21 2024] (DEBUG) Received credentials: root root \r\n
+[Wed Dec 18 10:18:21 2024] (DEBUG) Removing trailing newline character
+[Wed Dec 18 10:18:21 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:18:21 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:18:21 2024] (INFO) Client added: root (fd: 5, total clients: 2)
+[Wed Dec 18 10:18:21 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:18:21 2024] (INFO) Client disconnected
+[Wed Dec 18 10:18:23 2024] (INFO) Client connected
+[Wed Dec 18 10:18:23 2024] (INFO) New client connection established
+[Wed Dec 18 10:18:27 2024] (DEBUG) Received credentials: AUTH root root \r\b
+[Wed Dec 18 10:18:27 2024] (DEBUG) User: AUTH, Password: root
+[Wed Dec 18 10:18:27 2024] (DEBUG) Comparing: 'root root' with 'AUTH root'
+[Wed Dec 18 10:18:27 2024] (DEBUG) Comparing: 'user user' with 'AUTH root'
+[Wed Dec 18 10:18:27 2024] (ERROR) Authentication attempt failed
+[Wed Dec 18 10:18:27 2024] (INFO) Client disconnected during authentication
+[Wed Dec 18 10:18:28 2024] (INFO) Client connected
+[Wed Dec 18 10:18:28 2024] (INFO) New client connection established
+[Wed Dec 18 10:18:33 2024] (DEBUG) Received credentials: AUTH root root \r\n
+[Wed Dec 18 10:18:33 2024] (DEBUG) Removing trailing newline character
+[Wed Dec 18 10:18:33 2024] (DEBUG) User: AUTH, Password: root
+[Wed Dec 18 10:18:33 2024] (DEBUG) Comparing: 'root root' with 'AUTH root'
+[Wed Dec 18 10:18:33 2024] (DEBUG) Comparing: 'user user' with 'AUTH root'
+[Wed Dec 18 10:18:33 2024] (ERROR) Authentication attempt failed
+[Wed Dec 18 10:18:33 2024] (INFO) Client disconnected during authentication
+[Wed Dec 18 10:20:09 2024] (INFO) Client connected
+[Wed Dec 18 10:20:09 2024] (INFO) New client connection established
+[Wed Dec 18 10:20:12 2024] (DEBUG) Received credentials: root root
+[Wed Dec 18 10:20:12 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:20:12 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:20:12 2024] (INFO) Client added: root (fd: 5, total clients: 3)
+[Wed Dec 18 10:20:12 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:21:16 2024] (INFO) Client idle timeout reached. Closing connection.
+[Wed Dec 18 10:21:18 2024] (INFO) Client connected
+[Wed Dec 18 10:21:18 2024] (INFO) New client connection established
+[Wed Dec 18 10:21:20 2024] (DEBUG) Received credentials: root root\r\n
+[Wed Dec 18 10:21:20 2024] (DEBUG) Removing trailing newline character
+[Wed Dec 18 10:21:20 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:21:20 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:21:20 2024] (INFO) Client added: root (fd: 5, total clients: 4)
+[Wed Dec 18 10:21:20 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:21:34 2024] (INFO) Received message: UPDATE test_1.txt\r\n
+[Wed Dec 18 10:21:34 2024] (ERROR) Unknown command: UPDATE
+[Wed Dec 18 10:21:34 2024] (INFO) Client disconnected: root
+[Wed Dec 18 10:22:01 2024] (INFO) Received message: UPLOAD test_1.txt\r\n
+[Wed Dec 18 10:22:01 2024] (INFO) File upload command received
+[Wed Dec 18 10:22:01 2024] (ERROR) Invalid file information format
+[Wed Dec 18 10:22:01 2024] (INFO) Client disconnected: root
+[Wed Dec 18 10:23:06 2024] (INFO) Server started and listening on port: 9999
+[Wed Dec 18 10:23:08 2024] (INFO) Client connected
+[Wed Dec 18 10:23:08 2024] (INFO) New client connection established
+[Wed Dec 18 10:23:11 2024] (DEBUG) Received credentials: root root \r\n
+[Wed Dec 18 10:23:11 2024] (DEBUG) Removing trailing newline character
+[Wed Dec 18 10:23:11 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:23:11 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:23:11 2024] (INFO) Client added: root (fd: 5, total clients: 1)
+[Wed Dec 18 10:23:11 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:23:12 2024] (INFO) Client disconnected
+[Wed Dec 18 10:23:20 2024] (INFO) Client connected
+[Wed Dec 18 10:23:20 2024] (INFO) New client connection established
+[Wed Dec 18 10:23:22 2024] (DEBUG) Received credentials: root root\r\n
+[Wed Dec 18 10:23:22 2024] (DEBUG) Removing trailing newline character
+[Wed Dec 18 10:23:22 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:23:22 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:23:22 2024] (INFO) Client added: root (fd: 5, total clients: 2)
+[Wed Dec 18 10:23:22 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:23:34 2024] (INFO) Received message: UPLOAD test_1.txt\r\n
+[Wed Dec 18 10:23:34 2024] (INFO) File upload command received
+[Wed Dec 18 10:23:34 2024] (ERROR) Invalid file information format
+[Wed Dec 18 10:23:34 2024] (INFO) Client disconnected: root
+[Wed Dec 18 10:24:10 2024] (INFO) Server started and listening on port: 9999
+[Wed Dec 18 10:24:22 2024] (INFO) Client connected
+[Wed Dec 18 10:24:22 2024] (INFO) New client connection established
+[Wed Dec 18 10:24:24 2024] (DEBUG) Received credentials: root root
+[Wed Dec 18 10:24:24 2024] (DEBUG) User: root, Password: root
+[Wed Dec 18 10:24:24 2024] (DEBUG) Comparing: 'root root' with 'root root'
+[Wed Dec 18 10:24:24 2024] (INFO) Client added: root (fd: 5, total clients: 1)
+[Wed Dec 18 10:24:24 2024] (SUCCESS) User authenticated with role: ADMIN
+[Wed Dec 18 10:24:30 2024] (INFO) Received message: UPLOAD test_1.txt|17
+[Wed Dec 18 10:24:30 2024] (INFO) File upload command received
+[Wed Dec 18 10:24:30 2024] (INFO) Preparing to receive file: test_1.txt (size: 17 bytes)
+[Wed Dec 18 10:24:30 2024] (SUCCESS) File successfully received: test_1.txt (17 bytes)

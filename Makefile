@@ -1,23 +1,25 @@
 # Compilador y flags
 CC = gcc
-CFLAGS = -std=c11 -Wall -fsanitize=address
+CFLAGS = -std=gnu99 -Wall -fsanitize=address
 LDFLAGS = -lpthread
 
-# Fuentes y ejecutables
-SRCS_SERVER = src/server.c
-SRCS_CLIENT = src/client.c
-TARGET_SERVER = server
-TARGET_CLIENT = client
+# Directorios y nombres de archivos
+SRC_DIR = src
+BUILD_DIR = $(SRC_DIR)
+SRCS_SERVER = $(SRC_DIR)/server.c
+SRCS_CLIENT = $(SRC_DIR)/client.c
+TARGET_SERVER = $(BUILD_DIR)/server.o
+TARGET_CLIENT = $(BUILD_DIR)/client.o
 
 # Reglas de compilación
 all: $(TARGET_SERVER) $(TARGET_CLIENT)
 
 # Compilación del servidor
-server: $(SRCS_SERVER)
+$(TARGET_SERVER): $(SRCS_SERVER)
 	$(CC) $(CFLAGS) -o $(TARGET_SERVER) $(SRCS_SERVER) $(LDFLAGS)
 
 # Compilación del cliente
-client: $(SRCS_CLIENT)
+$(TARGET_CLIENT): $(SRCS_CLIENT)
 	$(CC) $(CFLAGS) -o $(TARGET_CLIENT) $(SRCS_CLIENT) $(LDFLAGS)
 
 # Limpiar los binarios

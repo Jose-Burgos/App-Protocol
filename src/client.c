@@ -17,7 +17,7 @@ int main() {
     struct sockaddr_in server_addr;
 
     if ((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("ERROR: No se pudo crear el socket");
+        perror("ERROR: Failed to create socket");
         exit(EXIT_FAILURE);
     }
 
@@ -26,80 +26,70 @@ int main() {
     server_addr.sin_port = htons(SERVER_PORT);
 
     if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
-        perror("ERROR: Dirección IP no válida o no soportada");
+        perror("ERROR: Invalid or unsupported IP address");
         close(socket_fd);
         exit(EXIT_FAILURE);
     }
 
     if (connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("ERROR: Fallo en la conexión con el servidor");
+        perror("ERROR: Connection to the server failed");
         close(socket_fd);
         exit(EXIT_FAILURE);
     }
 
-    printf("Conectado al servidor.\n");
+    printf("Connected to the server.\n");
 
     if (authenticate(socket_fd) != 0) {
         close(socket_fd);
-        printf("Autenticación fallida. Cerrando conexión.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    const char *upload_command = "UPLOAD\n";
-    if (send(socket_fd, upload_command, strlen(upload_command), 0) == -1) {
-        perror("ERROR: No se pudo enviar el comando UPLOAD");
-        close(socket_fd);
+        printf("Authentication failed. Closing connection.\n");
         exit(EXIT_FAILURE);
     }
 
     char file_path[BUFFER_SIZE];
-    printf("Ingrese la ruta del archivo a enviar: ");
+    printf("Enter the path of the file to send: ");
     fgets(file_path, BUFFER_SIZE, stdin);
     file_path[strcspn(file_path, "\n")] = '\0';
 
     send_file(socket_fd, file_path);
 
     close(socket_fd);
-    printf("Conexión cerrada.\n");
+    printf("Connection closed.\n");
 
     return 0;
 }
 
 int authenticate(int socket_fd) {
-    char username[BUFFER_SIZE], password[BUFFER_SIZE];
-
-    printf("Ingrese su nombre de usuario: ");
-    fgets(username, BUFFER_SIZE, stdin);
-    username[strcspn(username, "\n")] = '\0';
-
-    printf("Ingrese su contraseña: ");
-    fgets(password, BUFFER_SIZE, stdin);
-    password[strcspn(password, "\n")] = '\0';
-
     char auth_message[BUFFER_SIZE];
-    snprintf(auth_message, sizeof(auth_message), "%s %s\n", username, password);
 
+    printf("Enter your credentials (username password): ");
+    if (!fgets(auth_message, BUFFER_SIZE, stdin)) {
+        fprintf(stderr, "ERROR: Failed to read credentials.\n");
+        return -1;
+    }
+
+    auth_message[strcspn(auth_message, "\n")] = '\0';
+    strncat(auth_message, "\r\n", BUFFER_SIZE - strlen(auth_message) - 1);
 
     if (send(socket_fd, auth_message, strlen(auth_message), 0) == -1) {
-        perror("ERROR: Fallo al enviar la autenticación");
+        perror("ERROR: Failed to send authentication message");
         return -1;
     }
 
     char response[BUFFER_SIZE];
     if (recv(socket_fd, response, BUFFER_SIZE, 0) <= 0) {
-        perror("ERROR: No se recibió respuesta del servidor");
+        perror("ERROR: No response from server");
         return -1;
     }
 
     response[strcspn(response, "\n")] = '\0';
 
-    printf("Respuesta del servidor: '%s'\n", response);
+    printf("Server response: '%s'\n", response);
 
     if (strcmp(response, "AUTH_OK\\r\\n") == 0) {
-        printf("Autenticación exitosa.\n");
+        printf("Authentication successful.\n");
         return 0;
     } else {
-        printf("Autenticación fallida.\n");
+        printf("Authentication failed.\n");
         return -1;
     }
 }
@@ -107,13 +97,13 @@ int authenticate(int socket_fd) {
 void send_file(int socket_fd, const char *file_path) {
     FILE *file = fopen(file_path, "rb");
     if (!file) {
-        perror("ERROR: No se pudo abrir el archivo");
+        perror("ERROR: Could not open the file");
         return;
     }
 
     struct stat file_stat;
     if (stat(file_path, &file_stat) < 0) {
-        perror("ERROR: No se pudo obtener la información del archivo");
+        perror("ERROR: Could not retrieve file information");
         fclose(file);
         return;
     }
@@ -121,36 +111,25 @@ void send_file(int socket_fd, const char *file_path) {
     const char *file_name = strrchr(file_path, '/');
     file_name = (file_name) ? file_name + 1 : file_path;
 
-    char file_info[BUFFER_SIZE];
-    snprintf(file_info, sizeof(file_info), "%s|%ld", file_name, file_stat.st_size);
+    char upload_command[BUFFER_SIZE];
+    snprintf(upload_command, sizeof(upload_command), "UPLOAD %s|%ld\r\n", file_name, file_stat.st_size);
 
-    if (send(socket_fd, file_info, strlen(file_info), 0) == -1) {
-        perror("ERROR: Fallo al enviar la información del archivo");
+    if (send(socket_fd, upload_command, strlen(upload_command), 0) == -1) {
+        perror("ERROR: Failed to send upload command");
         fclose(file);
         return;
     }
-
-    char response[BUFFER_SIZE] = {0};
-
-    if (recv(socket_fd, response, sizeof(response), 0) <= 0 || strcmp(response, "READY") != 0) {
-        perror("ERROR: No se recibió confirmación del servidor");
-        fclose(file);
-        return;
-    }
-
-    printf("Enviando archivo: %s\n", file_name);
 
     char buffer[BUFFER_SIZE];
     size_t bytes_read;
     while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
         if (send(socket_fd, buffer, bytes_read, 0) == -1) {
-            perror("ERROR: Fallo al enviar los datos del archivo");
+            perror("ERROR: Failed to send file data");
             fclose(file);
             return;
         }
     }
 
-    printf("Archivo enviado con éxito.\n");
-
+    printf("File '%s' sent successfully.\n", file_name);
     fclose(file);
 }
