@@ -10,6 +10,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/select.h>
+#include <strings.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_LINE_LENGTH 100
@@ -43,9 +45,10 @@ typedef struct {
 
 /* GLOBAL VARIABLES */
 client_info_t *connected_clients = NULL;
-int max_clients = 100;
 int current_client_count = 0;
-// Estadísticas globales
+int max_client_capacity = 0;
+
+/* STATS */
 int total_connections = 0;
 int incorrect_lines_received = 0;
 int correct_lines_received = 0;
@@ -69,16 +72,16 @@ void handle_auth(int client_fd, const char* username, const char* password);
 void handle_list_files(int client_fd);
 void handle_echo(int client_fd, const char* text);
 void handle_get(int client_fd, const char* filename);
-void handle_client_file_transfer(int client_fd);
+void handle_client_file_transfer(int client_fd, const char *file_name, long file_size);
 client_info_t* find_client_by_fd(int client_fd);
 int add_client(int client_fd, const char* name, const char* role);
 void remove_client(int client_fd);
 void handle_tcp_connection(int client_fd);
 void handle_udp_datagram(int udp_server_fd);
-void update_case(const char *username, int case_on);
-void handle_get_base64(const int client_fd, const char* filename);
+void update_case(const char *name, int case_on);
+void handle_get_base64(int client_fd, const char* filename);
 void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len);
-int analyze_command(char* command,char* value,int case_on);
+int analyze_command(const char* command, const char* value,int case_on);
 int get_case_by_user(char* username);
 
 int main(void) {
@@ -94,7 +97,6 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
-    //TCP Socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("ERROR: Socket creation failed");
         log_activity("(%s) Socket creation failed", ERROR);
@@ -120,7 +122,6 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
-    //UDP Socket
     if ((udp_server_fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
         perror("ERROR: Socket creation failed");
         log_activity("(%s) Socket creation failed", ERROR);
@@ -142,15 +143,15 @@ int main(void) {
     log_activity("(%s) Server started and listening on port: %d", INFO, port);
 
     fd_set read_fds;
-    int max_fd = (server_fd > udp_server_fd) ? server_fd : udp_server_fd;
+    const int max_fd = (server_fd > udp_server_fd) ? server_fd : udp_server_fd;
 
     while (TRUE) {
 
         FD_ZERO(&read_fds);
-        FD_SET(server_fd, &read_fds);  // TCP
-        FD_SET(udp_server_fd, &read_fds);  // UDP
+        FD_SET(server_fd, &read_fds);
+        FD_SET(udp_server_fd, &read_fds);
 
-        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+        const int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
 
         if (activity == -1) {
             perror("ERROR: select() failed");
@@ -179,9 +180,6 @@ int main(void) {
         }
 
     }
-    pthread_rwlock_destroy(&rwlock);
-    close(server_fd);
-    return 0;
 }
 
 int read_port_from_config() {
@@ -336,11 +334,7 @@ void *handle_client(void *client_socket) {
 
         if (authenticate_user(buffer, name, role)) {
             authenticated = TRUE;
-            if (add_client(client_fd, name, role) == -1) {
-                log_activity("(%s) Could not add client to connected clients list", ERROR);
-                close(client_fd);
-                return NULL;
-            }
+            add_client(client_fd, name, role);
             const char *success_msg = "AUTH_OK\\r\\n";
             send(client_fd, success_msg, strlen(success_msg), 0);
             log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
@@ -457,7 +451,7 @@ int authenticate_user(const char *credentials, char* name, char *role) {
     return FALSE;
 }
 
-int analyze_command(char* command,char* value,int case_on){
+int analyze_command(const char* command, const char* value, const int case_on){
     if (case_on){
         if (strcmp(command,value) == 0)
             return TRUE;
@@ -477,13 +471,13 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
 
     if (command == NULL) {
         incorrect_lines_received++;
-        log_activity("(%s) Comando vacío",ERROR);
+        log_activity("(%s) Empty command received",WARNING);
         return;
     }
 
     if (analyze_command(command,"AUTH",case_on)) {
         if (!analyze_command(role,"ADMIN",case_on)){
-            log_activity("(%s) Usted no es un usuario ADMIN",ERROR);
+            log_activity("(%s) You are not authorized to use this command",WARNING);
         }
         else{
             const char* username = strtok(NULL, " ");
@@ -492,7 +486,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
             if (username && password) {
                 handle_auth(client_fd,username, password);
             } else {
-                log_activity("(%s) AUTH requiere un username y password",ERROR);
+                log_activity("(%s) AUTH requieres username and password",ERROR);
             }
         }
     } else if (analyze_command(command, "LIST",case_on)) {
@@ -502,7 +496,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
             handle_list_files(client_fd);
             correct_lines_received++;
         } else {
-            log_activity("(%s) LIST FILES es el único subcomando válido",ERROR);
+            log_activity("(%s) LIST FILES only command supported",WARNING);
             incorrect_lines_received++;
         }
     } else if (analyze_command(command, "ECHO",case_on)) {
@@ -512,7 +506,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
             handle_echo(client_fd,text);
             correct_lines_received++;
         } else {
-            log_activity("(%s) ECHO requiere texto",ERROR);
+            log_activity("(%s) ECHO requires text",ERROR);
             incorrect_lines_received++;
         }
     } else if (analyze_command(command, "GET",case_on)) {
@@ -526,16 +520,42 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
             handle_get(client_fd,subcommand);
             correct_lines_received++;
         } else {
-            log_activity("(%s) GET requiere un nombre de archivo",ERROR);
+            log_activity("(%s) GET requires a filename",ERROR);
             incorrect_lines_received++;
         }
-    } else if (strcmp(command, "UPLOAD") == 0) {
-        handle_client_file_transfer(client_fd);
+    } else if (analyze_command(command, "UPLOAD", case_on)) {
+        log_activity("(%s) File upload command received", INFO);
+
+        char *file_info = strtok(NULL, "\r\n");
+        if (file_info == NULL) {
+            log_activity("(%s) Missing file information after UPLOAD command", ERROR);
+            const char *error_msg = "ERROR: Invalid UPLOAD command\r\n";
+            send(client_fd, error_msg, strlen(error_msg), 0);
+            return;
+        }
+
+        char *file_name = strtok(file_info, "|");
+        char *file_size_str = strtok(NULL, "|");
+
+        if (!file_name || !file_size_str) {
+            log_activity("(%s) Invalid file information format", ERROR);
+            const char *error_msg = "ERROR: Invalid file upload format\r\n";
+            send(client_fd, error_msg, strlen(error_msg), 0);
+            return;
+        }
+
+        const long file_size = strtol(file_size_str, NULL, 10);
+        if (file_size <= 0) {
+            log_activity("(%s) Invalid file size", ERROR);
+            const char *error_msg = "ERROR: Invalid file size\r\n";
+            send(client_fd, error_msg, strlen(error_msg), 0);
+            return;
+        }
+
+        handle_client_file_transfer(client_fd, file_name, file_size);
         correct_lines_received++;
-        log_activity("(%s) File uploaded",INFO);
-    }
-    else {
-        log_activity("(%s) Comando no reconocido",ERROR);
+    } else {
+        log_activity("(%s) Unknown command: %s",ERROR,command);
         incorrect_lines_received++;
     }
 }
@@ -553,14 +573,13 @@ void handle_auth(const int client_fd,const char* username, const char* password)
     }
 
     char new_line[100];
-    //TODO: Now only USER role can be created, also need to create ADMIN´s ?
     snprintf(new_line, sizeof(new_line), "%s %s USER\n", username, password);
 
     if (fprintf(file, "%s", new_line) < 0) {
         perror("ERROR: Could not write to users file");
         log_activity("(%s) Could not write to users file", ERROR);
     } else {
-        log_activity("New user added successfully: %s\n", username);
+        log_activity("(%s) New user added successfully: %s\n", INFO, username);
         log_activity("(%s) New user added: %s", SUCCESS, username);
         const char * message = "User added successfully \n";
         send(client_fd,message, strlen(message),0);
@@ -653,129 +672,196 @@ void handle_get(const int client_fd, const char* filename){
 
 void create_directory_if_not_exists(const char *dir_path) {
     char temp_path[PATH_MAX] = "";
-    char *token;
     char dir_copy[PATH_MAX];
 
-    // Crear una copia del path porque strtok modifica el string original
     snprintf(dir_copy, sizeof(dir_copy), "%s", dir_path);
 
-    // Separar el path en tokens según el separador '/'
-    token = strtok(dir_copy, "/");
+    const char *token = strtok(dir_copy, "/");
     while (token != NULL) {
-        // Concatenar el directorio actual al path temporal
         strcat(temp_path, token);
         strcat(temp_path, "/");
 
-        // Verificar si el directorio existe
         struct stat st = {0};
         if (stat(temp_path, &st) == -1) {
-            // Si no existe, lo creamos
             if (mkdir(temp_path, 0700) == -1) {
-                perror("Error al crear el directorio");
+                log_activity("(%s) Directory creation failed", ERROR);
+                perror("Error: Directory creation failed");
                 exit(1);
             }
         }
 
-        // Pasar al siguiente token
         token = strtok(NULL, "/");
     }
 }
 
-void handle_client_file_transfer(int client_fd) {
-    client_info_t *client = find_client_by_fd(client_fd);
-    char buffer[BUFFER_SIZE];
-    char dir_path[256];
-
-    const int bytes_received_info = (int) recv(client_fd, buffer, sizeof(buffer), 0);
-    if (bytes_received_info <= 0) {
-        perror("Error al recibir la información del archivo");
+void handle_client_file_transfer(const int client_fd, const char *file_name, const long file_size) {
+    if (strstr(file_name, "../") || file_name[0] == '/') {
+        log_activity("(%s) Potential directory traversal attempt blocked", ERROR);
+        const char *error_msg = "ERROR: Invalid file name\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
         return;
     }
 
-    buffer[bytes_received_info] = '\0';
-
-    char *file_name = strtok(buffer, "|");
-    const char *file_size_str = strtok(NULL, "|");
-    const long file_size = strtol(file_size_str, NULL, 10);
-
-    if (file_name == NULL || file_size <= 0) {
-        perror("Información del archivo no válida");
+    const client_info_t* client = find_client_by_fd(client_fd);
+    if (client == NULL) {
+        log_activity("(%s) Client not found for file transfer", ERROR);
+        const char *error_msg = "ERROR: Client authentication lost\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
         return;
     }
+
+    const long MAX_FILE_SIZE = 10 * 1024 * 1024;
+    if (file_size > MAX_FILE_SIZE) {
+        log_activity("(%s) File too large: %ld bytes", ERROR, file_size);
+        const char *error_msg = "ERROR: File size exceeds maximum limit\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    char dir_path[PATH_MAX];
+    char file_path[PATH_MAX];
 
     snprintf(dir_path, sizeof(dir_path), "../src/server/files/%s", client->name);
     create_directory_if_not_exists(dir_path);
 
-    char file_path[512];
     snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, file_name);
 
     FILE *file = fopen(file_path, "wb");
-    if (file == NULL) {
-        perror("Error al abrir el archivo para escritura");
-        send(client_fd, "Error: No se pudo crear el archivo", 32, 0);
+    if (!file) {
+        log_activity("(%s) Failed to create file: %s", ERROR, file_path);
+        const char *error_msg = "ERROR: Unable to create file\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
         return;
     }
 
-    send(client_fd, "READY", 5, 0);
+    log_activity("(%s) Preparing to receive file: %s (size: %ld bytes)", INFO, file_name, file_size);
+    const char *ready_msg = "READY\r\n";
+    if (send(client_fd, ready_msg, strlen(ready_msg), 0) == -1) {
+        log_activity("(%s) Failed to send ready message", ERROR);
+        fclose(file);
+        unlink(file_path);
+        return;
+    }
 
     long total_bytes_received = 0;
+    fd_set read_fds;
+    struct timeval timeout;
+
     while (total_bytes_received < file_size) {
-        const int bytes_received = (int) recv(client_fd, buffer, sizeof(buffer), 0);
-        if (bytes_received <= 0) {
-            perror("Error al recibir el archivo");
-            send(client_fd, "Error al recibir el archivo", 27, 0);
-            fclose(file);
-            return;
+        char buffer[BUFFER_SIZE];
+        FD_ZERO(&read_fds);
+        FD_SET(client_fd, &read_fds);
+
+        timeout.tv_sec = 10;
+        timeout.tv_usec = 0;
+
+        const int ready = select(client_fd + 1, &read_fds, NULL, NULL, &timeout);
+        if (ready == -1) {
+            log_activity("(%s) Select error during file transfer", ERROR);
+            break;
         }
 
-        fwrite(buffer, 1, bytes_received, file);
+        if (ready == 0) {
+            log_activity("(%s) Timeout during file transfer", ERROR);
+            break;
+        }
+
+        const long bytes_to_read = (file_size - total_bytes_received < BUFFER_SIZE)
+                              ? file_size - total_bytes_received
+                              : BUFFER_SIZE;
+
+        const ssize_t bytes_received = recv(client_fd, buffer, bytes_to_read, 0);
+
+        if (bytes_received <= 0) {
+            if (bytes_received == 0) {
+                log_activity("(%s) Client closed connection during file transfer", ERROR);
+            } else {
+                log_activity("(%s) Receive error during file transfer", ERROR);
+                perror("Receive error");
+            }
+            break;
+        }
+
+        const size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
+        if (bytes_written != (size_t)bytes_received) {
+            log_activity("(%s) File write error", ERROR);
+            break;
+        }
+
         total_bytes_received += bytes_received;
     }
 
-    send(client_fd, "Success", 7, 0);
-    total_files_uploaded++;
-
     fclose(file);
+
+    if (total_bytes_received == file_size) {
+        total_files_uploaded++;
+        log_activity("(%s) File successfully received: %s (%ld bytes)", SUCCESS, file_name, total_bytes_received);
+
+        const char *success_msg = "File uploaded successfully\r\n";
+        if (send(client_fd, success_msg, strlen(success_msg), 0) == -1) {
+            log_activity("(%s) Failed to send success message", WARNING);
+        }
+    } else {
+        unlink(file_path);
+        log_activity("(%s) File transfer incomplete. Received %ld of %ld bytes", ERROR, total_bytes_received, file_size);
+
+        const char *error_msg = "ERROR: File transfer incomplete\r\n";
+        if (send(client_fd, error_msg, strlen(error_msg), 0) == -1) {
+            log_activity("(%s) Failed to send error message", WARNING);
+        }
+    }
 }
 
 int add_client(const int client_fd, const char* name, const char* role) {
     pthread_rwlock_wrlock(&rwlock);
 
-    if (current_client_count >= max_clients) {
-        pthread_rwlock_unlock(&rwlock);
-        return FALSE;
-    }
+    if (connected_clients == NULL || current_client_count >= max_client_capacity) {
+        const int new_capacity = max_client_capacity + 5;
+        client_info_t *new_clients = realloc(connected_clients, new_capacity * sizeof(client_info_t));
 
-    if (connected_clients == NULL) {
-        connected_clients = malloc(max_clients * sizeof(client_info_t));
-        if (connected_clients == NULL) {
+        if (new_clients == NULL) {
+            log_activity("(%s) Memory reallocation failed for client tracking", ERROR);
             pthread_rwlock_unlock(&rwlock);
             return FALSE;
         }
+
+        connected_clients = new_clients;
+
+        memset(&connected_clients[max_client_capacity], 0,
+               (new_capacity - max_client_capacity) * sizeof(client_info_t));
+
+        max_client_capacity = new_capacity;
     }
 
-    for (int i = 0; i < max_clients; i++) {
+    for (int i = 0; i < max_client_capacity; i++) {
         if (connected_clients[i].client_fd == 0) {
             connected_clients[i].client_fd = client_fd;
             connected_clients[i].last_activity_time = time(NULL);
             strncpy(connected_clients[i].name, name, MAX_CLIENT_NAME - 1);
+            connected_clients[i].name[MAX_CLIENT_NAME - 1] = '\0';
             strncpy(connected_clients[i].role, role, MAX_CLIENT_ROLE - 1);
+            connected_clients[i].role[MAX_CLIENT_ROLE - 1] = '\0';
 
             current_client_count++;
+            log_activity("(%s) Client added: %s (fd: %d, total clients: %d)",
+                         INFO, name, client_fd, current_client_count);
             pthread_rwlock_unlock(&rwlock);
             return TRUE;
         }
     }
 
+    log_activity("(%s) Failed to add client - unexpected error", ERROR);
     pthread_rwlock_unlock(&rwlock);
     return FALSE;
 }
 
-void remove_client(int client_fd) {
+void remove_client(const int client_fd) {
     pthread_rwlock_wrlock(&rwlock);
 
-    for (int i = 0; i < max_clients; i++) {
+    for (int i = 0; i < max_client_capacity; i++) {
         if (connected_clients[i].client_fd == client_fd) {
+            log_activity("(%s) Client disconnected: %s", INFO, connected_clients[i].name);
+
             connected_clients[i].client_fd = 0;
             memset(connected_clients[i].name, 0, MAX_CLIENT_NAME);
             memset(connected_clients[i].role, 0, MAX_CLIENT_ROLE);
@@ -787,31 +873,31 @@ void remove_client(int client_fd) {
 
     pthread_rwlock_unlock(&rwlock);
 }
-
 client_info_t* find_client_by_fd(const int client_fd) {
     pthread_rwlock_rdlock(&rwlock);
 
-    for (int i = 0; i < max_clients; i++) {
+    for (int i = 0; i < max_client_capacity; i++) {
         if (connected_clients[i].client_fd == client_fd) {
             pthread_rwlock_unlock(&rwlock);
-            client_info_t* aux = &connected_clients[i];
-            printf("Client found: %s\n", aux->name);
-            return aux;
+            return &connected_clients[i];
         }
     }
 
     pthread_rwlock_unlock(&rwlock);
     return NULL;
 }
-
 void cleanup_client_tracking() {
+    pthread_rwlock_wrlock(&rwlock);
     if (connected_clients) {
         free(connected_clients);
         connected_clients = NULL;
+        current_client_count = 0;
+        max_client_capacity = 0;
     }
+    pthread_rwlock_unlock(&rwlock);
 }
 
-void handle_tcp_connection(int client_fd){
+void handle_tcp_connection(const int client_fd){
     pthread_t thread_id;
     int *pclient = malloc(sizeof(int));
     if (!pclient) {
@@ -832,21 +918,20 @@ void handle_tcp_connection(int client_fd){
     pthread_detach(thread_id);
 }
 
-void handle_udp_datagram(int udp_server_fd) {
+void handle_udp_datagram(const int udp_server_fd) {
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
     char buffer[BUFFER_SIZE];
     char role[BUFFER_SIZE] = {0};
     char name[MAX_CLIENT_NAME] = {0};
 
-    ssize_t recv_len = recvfrom(udp_server_fd, buffer, sizeof(buffer) - 1, 0,
+    const ssize_t recv_len = recvfrom(udp_server_fd, buffer, sizeof(buffer) - 1, 0,
                                 (struct sockaddr *)&client_addr, &addr_len);
     if (recv_len > 0) {
-        buffer[recv_len] = '\0'; // Asegurar que el buffer está null-terminated
+        buffer[recv_len] = '\0';
 
-        printf("Received UDP datagram: %s\n", buffer);
+        log_activity("(%s) Received UDP datagram: %s\n", DEBUG, buffer);
 
-        // Separar usuario, password y comando
         char *username = strtok(buffer, " ");
         char *password = strtok(NULL, " ");
         char *command = strtok(NULL, " ");
@@ -868,7 +953,6 @@ void handle_udp_datagram(int udp_server_fd) {
                 log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
             }
 
-            // Procesar el comando
             char response[BUFFER_SIZE];
 
             int case_on = get_case_by_user(username);
@@ -876,8 +960,7 @@ void handle_udp_datagram(int udp_server_fd) {
                 case_on = read_case_from_config();
 
             if (analyze_command(command, "SET",case_on)) {
-                // Leer los argumentos adicionales del comando
-                char *arg1 = strtok(NULL, " ");
+                const char *arg1 = strtok(NULL, " ");
                 char *arg2 = strtok(NULL, "\n");
 
 
@@ -901,12 +984,11 @@ void handle_udp_datagram(int udp_server_fd) {
                 incorrect_datagrams_received++;
             }
 
-            // Enviar la respuesta al cliente
             sendto(udp_server_fd, response, strlen(response), 0,
                    (struct sockaddr *)&client_addr, addr_len);
         } else {
-            printf("Malformed datagram: %s\n", buffer);
-            char error_response[] = "Invalid datagram format. Expected <username> <password> <command>";
+            log_activity("(%s) Invalid datagram format. Expected <username> <password> <command>", ERROR);
+            const char error_response[] = "Invalid datagram format. Expected <username> <password> <command>";
             sendto(udp_server_fd, error_response, strlen(error_response), 0,
                    (struct sockaddr *)&client_addr, addr_len);
             incorrect_datagrams_received++;
@@ -914,50 +996,50 @@ void handle_udp_datagram(int udp_server_fd) {
     }
 }
 
-
-void update_case(const char *name, int new_value) {
-    FILE *file = fopen(CASE_FILE_PATH, "r+"); // Abrir archivo en modo lectura/escritura
+void update_case(const char *name, const int case_on) {
+    FILE *file = fopen(CASE_FILE_PATH, "r+");
     if (file == NULL) {
-        perror("Error al abrir el archivo");
+        log_activity("(%s) Error while opening case file", ERROR);
+        perror("Error while opening case file");
+        return;
     }
-    char* username = strtok(name,"=");
-    // Obtener el descriptor de archivo para usar flock
-    int fd = fileno(file);
-    if (flock(fd, LOCK_EX) != 0) { // Bloqueo exclusivo
-        perror("Error al bloquear el archivo");
+
+    char name_copy[MAX_CLIENT_NAME];
+    strncpy(name_copy, name, sizeof(name_copy) - 1);
+    name_copy[sizeof(name_copy) - 1] = '\0';
+
+    char *username = strtok(name_copy, "=");
+
+    const int fd = fileno(file);
+    if (flock(fd, LOCK_EX) != 0) {
+        log_activity("(%s) Error while locking case file", ERROR);
+        perror("Error while locking case file");
         fclose(file);
+        return;
     }
 
     char buffer[MAX_LINE_LENGTH];
-    long line_start_pos; // Para recordar la posición de inicio de la línea
     int updated = 0;
 
     while (fgets(buffer, sizeof(buffer), file)) {
-        line_start_pos = ftell(file) - strlen(buffer);
-
-        // Dividir la línea en username y valor
+        const long line_start_pos = ftell(file) - strlen(buffer);
         char *line_username = strtok(buffer, "=");
-        char *line_value = strtok(NULL, "\n");
 
         if (line_username && strcmp(line_username, username) == 0) {
-            // Mover el puntero al inicio de la línea
             fseek(file, line_start_pos, SEEK_SET);
-            // Sobrescribir la línea con el nuevo valor
-            fprintf(file, "%s=%d\n", username, new_value);
+            fprintf(file, "%s=%d\n", username, case_on);
             updated = 1;
             break;
         }
     }
 
-    // Liberar el bloqueo
+    if (!updated) {
+        fprintf(file, "%s=%d\n", username, case_on);
+    }
+
     flock(fd, LOCK_UN);
     fclose(file);
-
-    if (!updated) {
-        fprintf(file, "%s=%d\n", username, new_value);
-    }
 }
-
 
 
 void handle_get_base64(const int client_fd, const char* filename) {
@@ -975,12 +1057,10 @@ void handle_get_base64(const int client_fd, const char* filename) {
         return;
     }
 
-    // Calcular el tamaño del archivo
     fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
+    const long file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    // Leer el contenido del archivo
     char *file_content = malloc(file_size);
     if (!file_content) {
         const char *error_msg = "ERROR: Memory allocation failed\r\n";
@@ -994,9 +1074,8 @@ void handle_get_base64(const int client_fd, const char* filename) {
     fread(file_content, 1, file_size, file);
     fclose(file);
 
-    // Codificar en Base64
-    size_t encoded_size = ((file_size + 2) / 3) * 4 + 1; // Cálculo del tamaño codificado
-    char *encoded_content = malloc(encoded_size + 2); // Agregar espacio para "\r\n"
+    const size_t encoded_size = ((file_size + 2) / 3) * 4 + 1;
+    char *encoded_content = malloc(encoded_size + 2);
     if (!encoded_content) {
         const char *error_msg = "ERROR: Memory allocation failed\r\n";
         send(client_fd, error_msg, strlen(error_msg), 0);
@@ -1026,15 +1105,12 @@ void handle_get_base64(const int client_fd, const char* filename) {
     }
     encoded_content[j] = '\0';
 
-    // Agregar \r\n al final del contenido codificado
     strcat(encoded_content, "\r\n");
 
-    // Enviar tamaño del archivo codificado
     char response_header[BUFFER_SIZE];
     snprintf(response_header, sizeof(response_header), "OK %zu\r\n", strlen(encoded_content) - 2); // No cuenta el \r\n extra
     send(client_fd, response_header, strlen(response_header), 0);
 
-    // Enviar contenido codificado en Base64
     send(client_fd, encoded_content, strlen(encoded_content), 0);
 
     log_activity("(%s) File sent in Base64: %s", SUCCESS, filename);
@@ -1047,6 +1123,7 @@ void handle_get_base64(const int client_fd, const char* filename) {
 
 void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len) {
     char stats_message[BUFFER_SIZE];
+    log_activity("(%s) Sending stats to client", INFO);
     snprintf(stats_message, sizeof(stats_message),
              "Total Connections: %d\r\n"
              "Incorrect Lines Received: %d\r\n"
@@ -1065,6 +1142,7 @@ void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_
 int get_case_by_user(char* username){
     FILE *file = fopen(CASE_FILE_PATH, "r");
     if (file == NULL) {
+        log_activity("(%s) Could not open case file", ERROR);
         perror("ERROR: Could not open case file");
         return -1;
     }
@@ -1072,12 +1150,12 @@ int get_case_by_user(char* username){
     char line[BUFFER_SIZE];
     int case_sensitive = -1;
 
-    char *name;
-    name = strcat(username,"=");
-    int length = strlen(name);
+    const char *name = strcat(username, "=");
+    const int length = strlen(name);
     while (fgets(line, sizeof(line), file)) {
         if (strncmp(line, name, length) == 0) {
             if (sscanf(line + length, "%d", &case_sensitive) != 1) {
+                log_activity("(%s) Invalid case value in case file", ERROR);
                 fprintf(stderr, "ERROR: Invalid case value in config file\n");
                 fclose(file);
                 return -1;
