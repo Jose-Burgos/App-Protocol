@@ -387,8 +387,8 @@ void *handle_client(void *client_socket) {
             break;
         }
 
-        const char *response = "Message received.\r\n";
-        send(client_fd, response, strlen(response), 0);
+        /*const char *response = "Message received.\r\n";
+        send(client_fd, response, strlen(response), 0);*/
 
         last_activity_time = time(NULL);
     }
@@ -462,9 +462,22 @@ int analyze_command(const char* command, const char* value, const int case_on){
     return FALSE;
 }
 
-void parse_command(const int client_fd, const char* input,const char* role,int case_on){
+void parse_command(const int client_fd, const char* input, const char* role, int case_on) {
+
+    size_t input_len = strlen(input);
+
+    if (input_len < 4 || input[input_len - 4] != '\\' || input[input_len - 3] != 'r' ||
+        input[input_len - 2] != '\\' || input[input_len - 1] != 'n') {
+        log_activity("(%s) Command does not end with \\r\\n", WARNING);
+        const char *error_msg = "ERROR: Command must end with \\r\\n\r\n";
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        incorrect_lines_received++;
+        return;
+    }
+
     char buffer[BUFFER_SIZE];
     strncpy(buffer, input, BUFFER_SIZE - 1);
+    buffer[input_len - 4] = '\0';
 
     const char* command = strtok(buffer, " ");
 
@@ -480,16 +493,16 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
         }
         else{
             const char* username = strtok(NULL, " ");
-            const char* password = strtok(NULL, "\r\n");
+            const char* password = strtok(NULL, "");
 
             if (username && password) {
                 handle_auth(client_fd,username, password);
             } else {
-                log_activity("(%s) AUTH requieres username and password",ERROR);
+                log_activity("(%s) AUTH requires username and password", ERROR);
             }
         }
     } else if (analyze_command(command, "LIST",case_on)) {
-        const char* subcommand = strtok(NULL, "\\r\\n");
+        const char* subcommand = strtok(NULL, "");
 
         if (subcommand && analyze_command(subcommand, "FILES",case_on)) {
             handle_list_files(client_fd);
@@ -499,7 +512,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
             incorrect_lines_received++;
         }
     } else if (analyze_command(command, "ECHO",case_on)) {
-        const char* text = strtok(NULL, "\r\n");
+        const char* text = strtok(NULL, "");
 
         if (text) {
             handle_echo(client_fd,text);
@@ -510,7 +523,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
         }
     } else if (analyze_command(command, "GET",case_on)) {
         const char* subcommand = strtok(NULL, " ");
-        const char* filename = strtok(NULL, "\r\n");
+        const char* filename = strtok(NULL, "");
 
         if (subcommand && strcasecmp(subcommand, "base64") == 0 && filename) {
             handle_get_base64(client_fd, filename);
@@ -525,7 +538,7 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
     } else if (analyze_command(command, "UPLOAD", case_on)) {
         log_activity("(%s) File upload command received", INFO);
 
-        char *file_info = strtok(NULL, "\r\n");
+        char *file_info = strtok(NULL, "");
         if (file_info == NULL) {
             log_activity("(%s) Missing file information after UPLOAD command", ERROR);
             const char *error_msg = "ERROR: Invalid UPLOAD command\r\n";
@@ -555,6 +568,9 @@ void parse_command(const int client_fd, const char* input,const char* role,int c
         correct_lines_received++;
     } else {
         log_activity("(%s) Unknown command: %s",ERROR,command);
+        char errormsg[BUFFER_SIZE];
+        sprintf(errormsg,"Unknown command: %s\n",command);
+        send(client_fd,errormsg, strlen(errormsg),0);
         incorrect_lines_received++;
     }
 }
@@ -572,7 +588,7 @@ void handle_auth(const int client_fd,const char* username, const char* password)
     }
 
     char new_line[100];
-    snprintf(new_line, sizeof(new_line), "%s %s USER\n", username, password);
+    snprintf(new_line, sizeof(new_line), "\n%s %s USER", username, password);
 
     if (fprintf(file, "%s", new_line) < 0) {
         perror("ERROR: Could not write to users file");
@@ -626,7 +642,7 @@ void handle_echo(const int client_fd, const char* text) {
     }
 
     strcpy(message, text);
-    strcat(message, "\n");
+    strcat(message, "\\r\\n");
 
     send(client_fd, message, strlen(message), 0);
 
@@ -650,6 +666,9 @@ void handle_get(const int client_fd, const char* filename){
     FILE* file = fopen(path,"r");
     if (!file) {
         log_activity("(%s) Could not open (%s) file for reading", ERROR, filename);
+        char errormsg[BUFFER_SIZE];
+        sprintf(errormsg,"%s file is not uploaded on the server or you cannot access\n",filename);
+        send(client_fd,errormsg, strlen(errormsg),0);
         pthread_rwlock_unlock(&rwlock);
         return;
     }
