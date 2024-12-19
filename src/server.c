@@ -12,6 +12,7 @@
 #include <sys/file.h>
 #include <sys/select.h>
 #include <strings.h>
+#include <ctype.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_LINE_LENGTH 100
@@ -84,6 +85,7 @@ void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_
 int analyze_command(const char* command, const char* value,int case_on);
 int get_case_by_user(char* username);
 void send_with_terminator(int client_fd, const char *message);
+void trim_whitespace(char *str);
 
 int main(void) {
     int server_fd;
@@ -325,8 +327,6 @@ void *handle_client(void *client_socket) {
         buffer[bytes_read] = '\0';
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
-        log_activity("(%s) Received credentials: %s", DEBUG, buffer);
-
         if (strlen(buffer) == 0) {
             const char *prompt_msg = "Please enter your credentials (username password):";
             send(client_fd, prompt_msg, strlen(prompt_msg), 0);
@@ -403,7 +403,6 @@ int authenticate_user(const char *credentials, char* name, char *role) {
 
     char *pos = strstr(credentials, "\\r\\n");
     if (pos) {
-        log_activity("(%s) Removing trailing newline character", DEBUG);
         *pos = '\0';
     }
 
@@ -413,8 +412,6 @@ int authenticate_user(const char *credentials, char* name, char *role) {
         log_activity("(%s) Invalid credentials format", ERROR, credentials);
         return FALSE;
     }
-
-    log_activity("(%s) User: %s, Password: %s", DEBUG, user, pass);
 
     FILE *file = fopen(USERS_FILE_PATH, "r");
     if (!file) {
@@ -429,8 +426,6 @@ int authenticate_user(const char *credentials, char* name, char *role) {
         char stored_user[BUFFER_SIZE / 3], stored_pass[BUFFER_SIZE / 3], stored_type[BUFFER_SIZE / 3];
 
         if (sscanf(line, "%s %s %s", stored_user, stored_pass, stored_type) == 3) {
-            log_activity("(%s) Comparing: '%s %s' with '%s %s'", DEBUG, stored_user, stored_pass, user, pass);
-
             if (strcmp(stored_user, user) == 0 && strcmp(stored_pass, pass) == 0) {
                 strncpy(role, stored_type, BUFFER_SIZE - 1);
                 strncpy(name, user, MAX_CLIENT_NAME - 1);
@@ -510,12 +505,9 @@ void parse_command(const int client_fd, const char* input, const char* role, int
             }
         }
     } else if (analyze_command(command, "LIST",case_on)) {
-        log_activity("(%s) LIST command received", DEBUG);
         const char* subcommand = strtok(NULL, " ");
-        log_activity("(%s) Subcommand: %s", DEBUG, subcommand);
         if (subcommand && analyze_command(subcommand, "FILES",case_on)) {
             handle_list_files(client_fd);
-            log_activity("(%s) LIST FILES command executed", DEBUG);
             correct_lines_received++;
         } else {
             log_activity("(%s) LIST FILES only command supported",WARNING);
@@ -536,6 +528,7 @@ void parse_command(const int client_fd, const char* input, const char* role, int
         const char* filename = strtok(NULL, "");
 
         if (subcommand && strcasecmp(subcommand, "base64") == 0 && filename) {
+            log_activity("(%s) Initiating base64 file transfer", INFO);
             handle_get_base64(client_fd, filename);
             correct_lines_received++;
         } else if (subcommand) {
@@ -623,10 +616,8 @@ void handle_list_files(const int client_fd) {
 
     client_info_t *client = find_client_by_fd(client_fd);
 
-    log_activity("(%s) Preparing to list files for: %s", DEBUG, client->name);
     char path_to_files[BUFFER_SIZE];
     sprintf(path_to_files, "%s/%s", FILES_DIRECTORY_PATH, client->name);
-    log_activity("(%s) Path to files: %s", DEBUG, path_to_files);
 
     DIR *directory = opendir(path_to_files);
     if (!directory) {
@@ -643,7 +634,6 @@ void handle_list_files(const int client_fd) {
             char message[BUFFER_SIZE];
             snprintf(message, sizeof(message), "%s\r\n", entry->d_name);
             send(client_fd, message, strlen(message), 0);
-            log_activity("(%s) File: %s", DEBUG, entry->d_name);
         }
     }
 
@@ -683,7 +673,6 @@ void handle_get(const int client_fd, const char* filename){
     char path[BUFFER_SIZE];
     snprintf(path, sizeof(path), "%s/%s/%s", FILES_DIRECTORY_PATH, client->name, filename);
 
-    log_activity("(%s) Preparing to send file: %s", DEBUG, path);
     FILE* file = fopen(path,"r");
     if (!file) {
         log_activity("(%s) Could not open (%s) file for reading", ERROR, filename);
@@ -974,8 +963,6 @@ void handle_udp_datagram(const int udp_server_fd) {
     if (recv_len > 0) {
         buffer[recv_len] = '\0';
 
-        log_activity("(%s) Received UDP datagram: %s\n", DEBUG, buffer);
-
         char *username = strtok(buffer, " ");
         char *password = strtok(NULL, " ");
         char *command = strtok(NULL, " ");
@@ -1090,11 +1077,18 @@ void handle_get_base64(const int client_fd, const char* filename) {
     pthread_rwlock_rdlock(&rwlock);
 
     client_info_t* client = find_client_by_fd(client_fd);
+    char trimmed_filename[BUFFER_SIZE];
+    strncpy(trimmed_filename, filename, BUFFER_SIZE - 1);
+    trimmed_filename[BUFFER_SIZE - 1] = '\0';
+    trim_whitespace(trimmed_filename);
+
     char filepath[BUFFER_SIZE];
-    snprintf(filepath, sizeof(filepath), "%s/%s/%s", FILES_DIRECTORY_PATH, client->name, filename);
+    snprintf(filepath, sizeof(filepath), "%s/%s/%s", FILES_DIRECTORY_PATH, client->name, trimmed_filename);
+    log_activity("(%s) Preparing to send file in Base64: %s", INFO, filepath);
 
     FILE *file = fopen(filepath, "r");
     if (!file) {
+        log_activity("CACA");
         const char *error_msg = "ERROR: File not found";
         send_with_terminator(client_fd, error_msg);
         log_activity("(%s) File not found: %s", ERROR, filename);
@@ -1214,4 +1208,24 @@ void send_with_terminator(int client_fd, const char *message) {
     char buffer[BUFFER_SIZE];
     snprintf(buffer, sizeof(buffer), "%s\r\n", message);
     send(client_fd, buffer, strlen(buffer), 0);
+}
+
+void trim_whitespace(char *str) {
+    char *end;
+
+    while (isspace((unsigned char)*str)) {
+        str++;
+    }
+
+    if (*str == 0) {
+        *str = '\0';
+        return;
+    }
+
+    end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end)) {
+        end--;
+    }
+
+    *(end + 1) = '\0';
 }
