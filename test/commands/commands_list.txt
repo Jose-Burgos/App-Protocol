@@ -1,0 +1,7 @@
+root root \r\n
+GET test.txt
+LIST FILES \r\n
+GET base64 test.txt \r\n
+GET test.txt \r\n
+GET test_1.txt \r\n
+EXIT \r\n
