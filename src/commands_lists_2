@@ -1,0 +1,12 @@
+LIST FILES\r\n
+AUTH user123 password123\r\n
+GET test.txt\r\n
+ECHO Hello World\r\n
+LIST USERS\r\n
+GET base64 test.txt\r\n
+AUTH admin password\r\n
+ECHO Goodbye\r\n
+LIST FILES
+AUTH user123
+GET test.txt\r\nsdsd
+GET file.txt base64\r\n

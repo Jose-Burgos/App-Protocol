@@ -1,0 +1,6 @@
+root root\r\n
+AUTH newuser newpassword
+GET notfound.txt\r\n
+list files\r\n
+GET base64 test.txt\r\n
+
