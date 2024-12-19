@@ -14,13 +14,14 @@ int read_commands_from_file(const char *file_path, char commands[][BUFFER_SIZE],
 void send_file(int socket_fd, const char *file_path);
 
 int main(const int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <server_ip> <server_port>\n", argv[0]);
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <server_ip> <server_port> <command_file>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     const char *server_ip = argv[1];
     const int server_port = atoi(argv[2]);
+    const char *command_file = argv[3];
 
     if (server_port <= 0 || server_port > 65535) {
         fprintf(stderr, "ERROR: Invalid port number\n");
@@ -51,13 +52,17 @@ int main(const int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    const char *file_path = "./src/commands.txt";
+    const char *dir_path = "./test/commands/";
+    char file_path[BUFFER_SIZE];
+    snprintf(file_path, sizeof(file_path), "%s%s", dir_path, command_file);
+    printf("File path: %s\n", file_path);
+
     char commands[100][BUFFER_SIZE];
     const int num_commands = read_commands_from_file(file_path, commands, 100);
 
     if (num_commands == 0) {
         while (1) {
-            printf("%s\n", commands[0]);
+            printf("Enter command: ");
             if (fgets(commands[0], BUFFER_SIZE, stdin) == NULL) {
                 break;
             }

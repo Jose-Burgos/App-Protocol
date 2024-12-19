@@ -1,6 +1,6 @@
 # Compilador y flags
 CC = gcc
-CFLAGS = -std=gnu99 -Wall -fsanitize=address
+CFLAGS = -std=gnu11 -Wall -fsanitize=address
 LDFLAGS = -lpthread
 
 # Directorios y nombres de archivos

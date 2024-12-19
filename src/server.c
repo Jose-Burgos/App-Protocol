@@ -262,7 +262,7 @@ int read_case_from_config(){
 
 int is_us(const char *line, size_t *invalid_pos) {
     for (size_t i = 0; line[i] != '\0'; i++) {
-        if (line[i] < 0 || line[i] > 127) {
+        if ((unsigned char)line[i] > 127) {
             *invalid_pos = i;
             return FALSE;
         }
@@ -752,7 +752,12 @@ void handle_client_file_transfer(const int client_fd, const char *file_name, con
     snprintf(dir_path, sizeof(dir_path), "../app/files/%s", client->name);
     create_directory_if_not_exists(dir_path);
 
-    snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, file_name);
+    if (snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, file_name) >= sizeof(file_path)) {
+        log_activity("(%s) File path too long: %s/%s", ERROR, dir_path, file_name);
+        const char *error_msg = "ERROR: File path too long";
+        send_with_terminator(client_fd, error_msg);
+        return;
+    }
 
     FILE *file = fopen(file_path, "wb");
     if (!file) {
@@ -1077,13 +1082,12 @@ void handle_get_base64(const int client_fd, const char* filename) {
     trimmed_filename[BUFFER_SIZE - 1] = '\0';
     trim_whitespace(trimmed_filename);
 
-    char filepath[BUFFER_SIZE];
+    char filepath[PATH_MAX];
     snprintf(filepath, sizeof(filepath), "%s/%s/%s", FILES_DIRECTORY_PATH, client->name, trimmed_filename);
     log_activity("(%s) Preparing to send file in Base64: %s", INFO, filepath);
 
     FILE *file = fopen(filepath, "r");
     if (!file) {
-        log_activity("CACA");
         const char *error_msg = "ERROR: File not found";
         send_with_terminator(client_fd, error_msg);
         log_activity("(%s) File not found: %s", ERROR, filename);
@@ -1092,7 +1096,7 @@ void handle_get_base64(const int client_fd, const char* filename) {
     }
 
     fseek(file, 0, SEEK_END);
-    const long file_size = ftell(file);
+    size_t file_size = (size_t)ftell(file);  // Convert to size_t
     fseek(file, 0, SEEK_SET);
 
     char *file_content = malloc(file_size);
@@ -1121,7 +1125,7 @@ void handle_get_base64(const int client_fd, const char* filename) {
 
     static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t i, j;
-    for (i = 0, j = 0; i < file_size;) {
+    for (i = 0, j = 0; i < file_size;) {  // Use consistent type (size_t)
         uint32_t octet_a = i < file_size ? (unsigned char)file_content[i++] : 0;
         uint32_t octet_b = i < file_size ? (unsigned char)file_content[i++] : 0;
         uint32_t octet_c = i < file_size ? (unsigned char)file_content[i++] : 0;
@@ -1134,7 +1138,7 @@ void handle_get_base64(const int client_fd, const char* filename) {
         encoded_content[j++] = base64_table[triple & 0x3F];
     }
 
-    for (size_t padding = 0; padding < (3 - (file_size % 3)) % 3; padding++) {
+    for (size_t padding = 0; padding < (3 - (file_size % 3)) % 3; padding++) {  // Use size_t for padding
         encoded_content[--j] = '=';
     }
     encoded_content[j] = '\0';
@@ -1152,6 +1156,7 @@ void handle_get_base64(const int client_fd, const char* filename) {
     free(encoded_content);
     pthread_rwlock_unlock(&rwlock);
 }
+
 
 void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len) {
     char stats_message[BUFFER_SIZE];
