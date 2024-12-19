@@ -6,7 +6,29 @@ services:
     ports:
       - "9999:9999"
     volumes:
-      - ./src/server/files:/app/files
-      - ./src/server/config:/app/config
-      - ./src/server/db:/app/db
-      - ./src/server/logs:/app/logs
+      - ./server1/files:/app/files
+      - ./server1/config:/app/config
+      - ./server1/db:/app/db
+      - ./server1/logs:/app/logs
+
+  server2:
+    image: server-image
+    container_name: server2
+    ports:
+      - "10000:9999"
+    volumes:
+      - ./server2/files:/app/files
+      - ./server2/config:/app/config
+      - ./server2/db:/app/db
+      - ./server2/logs:/app/logs
+
+  server3:
+    image: server-image
+    container_name: server3
+    ports:
+      - "10001:9999"
+    volumes:
+      - ./server3/files:/app/files
+      - ./server3/config:/app/config
+      - ./server3/db:/app/db
+      - ./server3/logs:/app/logs

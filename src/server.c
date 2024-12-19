@@ -83,6 +83,7 @@ void handle_get_base64(int client_fd, const char* filename);
 void send_stats_udp(int udp_server_fd, struct sockaddr_in *client_addr, socklen_t addr_len);
 int analyze_command(const char* command, const char* value,int case_on);
 int get_case_by_user(char* username);
+void send_with_terminator(int client_fd, const char *message);
 
 int main(void) {
     int server_fd;
@@ -327,7 +328,7 @@ void *handle_client(void *client_socket) {
         log_activity("(%s) Received credentials: %s", DEBUG, buffer);
 
         if (strlen(buffer) == 0) {
-            const char *prompt_msg = "Please enter your credentials (username password):\r\n";
+            const char *prompt_msg = "Please enter your credentials (username password):";
             send(client_fd, prompt_msg, strlen(prompt_msg), 0);
             continue;
         }
@@ -335,12 +336,12 @@ void *handle_client(void *client_socket) {
         if (authenticate_user(buffer, name, role)) {
             authenticated = TRUE;
             add_client(client_fd, name, role);
-            const char *success_msg = "AUTH_OK\\r\\n";
-            send(client_fd, success_msg, strlen(success_msg), 0);
+            const char *success_msg = "AUTH_OK";
+           send_with_terminator(client_fd, success_msg);
             log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
             correct_lines_received++;
         } else {
-            const char *error_msg = "Authentication failed. Try again.\r\n";
+            const char *error_msg = "Authentication failed. Try again.";
             send(client_fd, error_msg, strlen(error_msg), 0);
             log_activity("(%s) Authentication attempt failed", ERROR);
             incorrect_lines_received++;
@@ -381,14 +382,11 @@ void *handle_client(void *client_socket) {
         parse_command(client_fd,buffer,role,case_on);
 
         if (strcmp(buffer, "logout") == 0) {
-            const char *logout_msg = "Logged out. Goodbye!\r\n";
+            const char *logout_msg = "Logged out. Goodbye!";
             send(client_fd, logout_msg, strlen(logout_msg), 0);
             log_activity("(%s) User logged out", INFO);
             break;
         }
-
-        /*const char *response = "Message received.\r\n";
-        send(client_fd, response, strlen(response), 0);*/
 
         last_activity_time = time(NULL);
     }
@@ -469,8 +467,8 @@ void parse_command(const int client_fd, const char* input, const char* role, int
     if (input_len < 4 || input[input_len - 4] != '\\' || input[input_len - 3] != 'r' ||
         input[input_len - 2] != '\\' || input[input_len - 1] != 'n') {
         log_activity("(%s) Command does not end with \\r\\n", WARNING);
-        const char *error_msg = "ERROR: Command must end with \\r\\n\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: Command must end with \\r\\n";
+        send_with_terminator(client_fd, error_msg);
         incorrect_lines_received++;
         return;
     }
@@ -485,6 +483,16 @@ void parse_command(const int client_fd, const char* input, const char* role, int
         incorrect_lines_received++;
         log_activity("(%s) Empty command received",WARNING);
         return;
+    }
+
+    if (analyze_command(command, "EXIT", case_on)) {
+        log_activity("(%s) Client requested to exit", INFO);
+        const char *exit_msg = "Goodbye!";
+        correct_lines_received++;
+        send_with_terminator(client_fd, exit_msg);
+        remove_client(client_fd);
+        close(client_fd);
+        pthread_exit(NULL);
     }
 
     if (analyze_command(command,"AUTH",case_on)) {
@@ -502,10 +510,12 @@ void parse_command(const int client_fd, const char* input, const char* role, int
             }
         }
     } else if (analyze_command(command, "LIST",case_on)) {
-        const char* subcommand = strtok(NULL, "");
-
+        log_activity("(%s) LIST command received", DEBUG);
+        const char* subcommand = strtok(NULL, " ");
+        log_activity("(%s) Subcommand: %s", DEBUG, subcommand);
         if (subcommand && analyze_command(subcommand, "FILES",case_on)) {
             handle_list_files(client_fd);
+            log_activity("(%s) LIST FILES command executed", DEBUG);
             correct_lines_received++;
         } else {
             log_activity("(%s) LIST FILES only command supported",WARNING);
@@ -541,7 +551,7 @@ void parse_command(const int client_fd, const char* input, const char* role, int
         char *file_info = strtok(NULL, "");
         if (file_info == NULL) {
             log_activity("(%s) Missing file information after UPLOAD command", ERROR);
-            const char *error_msg = "ERROR: Invalid UPLOAD command\r\n";
+            const char *error_msg = "ERROR: Invalid UPLOAD command";
             send(client_fd, error_msg, strlen(error_msg), 0);
             return;
         }
@@ -551,7 +561,7 @@ void parse_command(const int client_fd, const char* input, const char* role, int
 
         if (!file_name || !file_size_str) {
             log_activity("(%s) Invalid file information format", ERROR);
-            const char *error_msg = "ERROR: Invalid file upload format\r\n";
+            const char *error_msg = "ERROR: Invalid file upload format";
             send(client_fd, error_msg, strlen(error_msg), 0);
             return;
         }
@@ -559,7 +569,7 @@ void parse_command(const int client_fd, const char* input, const char* role, int
         const long file_size = strtol(file_size_str, NULL, 10);
         if (file_size <= 0) {
             log_activity("(%s) Invalid file size", ERROR);
-            const char *error_msg = "ERROR: Invalid file size\r\n";
+            const char *error_msg = "ERROR: Invalid file size";
             send(client_fd, error_msg, strlen(error_msg), 0);
             return;
         }
@@ -603,16 +613,17 @@ void handle_auth(const int client_fd,const char* username, const char* password)
     pthread_rwlock_unlock(&rwlock);
 }
 
-void handle_list_files(const int client_fd){
+void handle_list_files(const int client_fd) {
     pthread_rwlock_rdlock(&rwlock);
 
-    client_info_t* client = find_client_by_fd(client_fd);
+    client_info_t *client = find_client_by_fd(client_fd);
 
+    log_activity("(%s) Preparing to list files for: %s", DEBUG, client->name);
     char path_to_files[BUFFER_SIZE];
+    sprintf(path_to_files, "%s/%s", FILES_DIRECTORY_PATH, client->name);
+    log_activity("(%s) Path to files: %s", DEBUG, path_to_files);
 
-    sprintf(path_to_files,"%s/%s",FILES_DIRECTORY_PATH, client->name);
-
-    DIR* directory = opendir(path_to_files);
+    DIR *directory = opendir(path_to_files);
     if (!directory) {
         perror("ERROR: Could not open files directory");
         log_activity("(%s) Could not open files directory", ERROR);
@@ -620,18 +631,24 @@ void handle_list_files(const int client_fd){
         return;
     }
 
-    struct dirent* entry;
-
+    struct dirent *entry;
+    log_activity("(%s) Sending file list to client", INFO);
     while ((entry = readdir(directory)) != NULL) {
         if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-            const char * message = strcat(entry->d_name,"\n");
-            send(client_fd,message, strlen(message),0);
+            char message[BUFFER_SIZE];
+            snprintf(message, sizeof(message), "%s\r\n", entry->d_name);
+            send(client_fd, message, strlen(message), 0);
+            log_activity("(%s) File: %s", DEBUG, entry->d_name);
         }
     }
 
+    log_activity("(%s) File list sent successfully", SUCCESS);
     closedir(directory);
     pthread_rwlock_unlock(&rwlock);
+
+    send_with_terminator(client_fd, "");
 }
+
 
 void handle_echo(const int client_fd, const char* text) {
     const size_t message_len = strlen(text) + 2;
@@ -642,9 +659,8 @@ void handle_echo(const int client_fd, const char* text) {
     }
 
     strcpy(message, text);
-    strcat(message, "\\r\\n");
 
-    send(client_fd, message, strlen(message), 0);
+    send_with_terminator(client_fd, message);
 
     free(message);
 }
@@ -680,17 +696,14 @@ void handle_get(const int client_fd, const char* filename){
     char size[MAX_LINE_LENGTH];
     sprintf(size, "%ld", file_size);
 
-    char aux[50] = "OK ";
-
-    const char * message = strcat(strcat(aux,size),"\r\n");
-    send(client_fd, message, strlen(message),0);
+    send_with_terminator(client_fd, "OK ");
 
     char line[BUFFER_SIZE];
 
     while(fgets(line,sizeof(line),file)){
-        send(client_fd,line, strlen(line),0);
+        send(client_fd,line,strlen(line),0);
     }
-
+    send_with_terminator(client_fd, "");
     total_files_downloaded++;
     fclose(file);
     pthread_rwlock_unlock(&rwlock);
@@ -723,24 +736,24 @@ void create_directory_if_not_exists(const char *dir_path) {
 void handle_client_file_transfer(const int client_fd, const char *file_name, const long file_size) {
     if (strstr(file_name, "../") || file_name[0] == '/') {
         log_activity("(%s) Potential directory traversal attempt blocked", ERROR);
-        const char *error_msg = "ERROR: Invalid file name\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: Invalid file name";
+        send_with_terminator(client_fd, error_msg);
         return;
     }
 
     const client_info_t* client = find_client_by_fd(client_fd);
     if (client == NULL) {
         log_activity("(%s) Client not found for file transfer", ERROR);
-        const char *error_msg = "ERROR: Client authentication lost\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: Client authentication lost";
+        send_with_terminator(client_fd, error_msg);
         return;
     }
 
     const long MAX_FILE_SIZE = 10 * 1024 * 1024;
     if (file_size > MAX_FILE_SIZE) {
         log_activity("(%s) File too large: %ld bytes", ERROR, file_size);
-        const char *error_msg = "ERROR: File size exceeds maximum limit\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: File size exceeds maximum limit";
+        send_with_terminator(client_fd, error_msg);
         return;
     }
 
@@ -755,13 +768,13 @@ void handle_client_file_transfer(const int client_fd, const char *file_name, con
     FILE *file = fopen(file_path, "wb");
     if (!file) {
         log_activity("(%s) Failed to create file: %s", ERROR, file_path);
-        const char *error_msg = "ERROR: Unable to create file\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: Unable to create file";
+        send_with_terminator(client_fd, error_msg);
         return;
     }
 
     log_activity("(%s) Preparing to receive file: %s (size: %ld bytes)", INFO, file_name, file_size);
-    const char *ready_msg = "READY\r\n";
+    const char *ready_msg = "READY";
     if (send(client_fd, ready_msg, strlen(ready_msg), 0) == -1) {
         log_activity("(%s) Failed to send ready message", ERROR);
         fclose(file);
@@ -823,7 +836,7 @@ void handle_client_file_transfer(const int client_fd, const char *file_name, con
         total_files_uploaded++;
         log_activity("(%s) File successfully received: %s (%ld bytes)", SUCCESS, file_name, total_bytes_received);
 
-        const char *success_msg = "File uploaded successfully\r\n";
+        const char *success_msg = "File uploaded successfully";
         if (send(client_fd, success_msg, strlen(success_msg), 0) == -1) {
             log_activity("(%s) Failed to send success message", WARNING);
         }
@@ -831,7 +844,7 @@ void handle_client_file_transfer(const int client_fd, const char *file_name, con
         unlink(file_path);
         log_activity("(%s) File transfer incomplete. Received %ld of %ld bytes", ERROR, total_bytes_received, file_size);
 
-        const char *error_msg = "ERROR: File transfer incomplete\r\n";
+        const char *error_msg = "ERROR: File transfer incomplete";
         if (send(client_fd, error_msg, strlen(error_msg), 0) == -1) {
             log_activity("(%s) Failed to send error message", WARNING);
         }
@@ -965,16 +978,16 @@ void handle_udp_datagram(const int udp_server_fd) {
         if (username && password && command) {
 
             char credentials[MAX_LINE_LENGTH];
-            sprintf(credentials,"%s %s\r\n",username,password);
+            sprintf(credentials,"%s %s",username,password);
 
             if (!authenticate_user(credentials,name,role)){
-                const char *error_msg = "Authentication failed. Try again.\r\n";
+                const char *error_msg = "Authentication failed. Try again.";
                 sendto(udp_server_fd, error_msg, strlen(error_msg), 0,(struct sockaddr *)&client_addr, addr_len);
                 log_activity("(%s) Authentication attempt failed", ERROR);
                 incorrect_datagrams_received++;
             }
             else{
-                const char *success_msg = "Authentication success.\r\n";
+                const char *success_msg = "Authentication success.";
                 sendto(udp_server_fd, success_msg, strlen(success_msg), 0,(struct sockaddr *)&client_addr, addr_len);
                 log_activity("(%s) User authenticated with role: %s", SUCCESS, role);
             }
@@ -1071,13 +1084,14 @@ void update_case(const char *name, const int case_on) {
 void handle_get_base64(const int client_fd, const char* filename) {
     pthread_rwlock_rdlock(&rwlock);
 
+    client_info_t* client = find_client_by_fd(client_fd);
     char filepath[BUFFER_SIZE];
-    snprintf(filepath, sizeof(filepath), "%s/%s", FILES_DIRECTORY_PATH, filename);
+    snprintf(filepath, sizeof(filepath), "%s/%s/%s", FILES_DIRECTORY_PATH, client->name, filename);
 
     FILE *file = fopen(filepath, "r");
     if (!file) {
-        const char *error_msg = "ERROR: File not found\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: File not found";
+        send_with_terminator(client_fd, error_msg);
         log_activity("(%s) File not found: %s", ERROR, filename);
         pthread_rwlock_unlock(&rwlock);
         return;
@@ -1089,8 +1103,8 @@ void handle_get_base64(const int client_fd, const char* filename) {
 
     char *file_content = malloc(file_size);
     if (!file_content) {
-        const char *error_msg = "ERROR: Memory allocation failed\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: Memory allocation failed";
+        send_with_terminator(client_fd, error_msg);
         log_activity("(%s) Memory allocation failed", ERROR);
         fclose(file);
         pthread_rwlock_unlock(&rwlock);
@@ -1103,8 +1117,8 @@ void handle_get_base64(const int client_fd, const char* filename) {
     const size_t encoded_size = ((file_size + 2) / 3) * 4 + 1;
     char *encoded_content = malloc(encoded_size + 2);
     if (!encoded_content) {
-        const char *error_msg = "ERROR: Memory allocation failed\r\n";
-        send(client_fd, error_msg, strlen(error_msg), 0);
+        const char *error_msg = "ERROR: Memory allocation failed";
+        send_with_terminator(client_fd, error_msg);
         log_activity("(%s) Memory allocation failed", ERROR);
         free(file_content);
         pthread_rwlock_unlock(&rwlock);
@@ -1131,13 +1145,11 @@ void handle_get_base64(const int client_fd, const char* filename) {
     }
     encoded_content[j] = '\0';
 
-    strcat(encoded_content, "\r\n");
-
     char response_header[BUFFER_SIZE];
-    snprintf(response_header, sizeof(response_header), "OK %zu\r\n", strlen(encoded_content) - 2); // No cuenta el \r\n extra
-    send(client_fd, response_header, strlen(response_header), 0);
+    snprintf(response_header, sizeof(response_header), "OK %zu\r\n", strlen(encoded_content) - 2);
+    send_with_terminator(client_fd, response_header);
 
-    send(client_fd, encoded_content, strlen(encoded_content), 0);
+    send_with_terminator(client_fd, encoded_content);
 
     log_activity("(%s) File sent in Base64: %s", SUCCESS, filename);
     total_files_downloaded++;
@@ -1191,4 +1203,10 @@ int get_case_by_user(char* username){
     }
     fclose(file);
     return case_sensitive;
+}
+
+void send_with_terminator(int client_fd, const char *message) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "%s\r\n", message);
+    send(client_fd, buffer, strlen(buffer), 0);
 }
