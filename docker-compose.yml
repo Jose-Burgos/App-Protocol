@@ -5,6 +5,7 @@ services:
     container_name: server1
     ports:
       - "9999:9999"
+      - "9999:9999/udp"
     volumes:
       - ./server1/files:/app/files
       - ./server1/config:/app/config

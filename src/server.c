@@ -581,6 +581,11 @@ void parse_command(const int client_fd, const char* input, const char* role, int
         char errormsg[BUFFER_SIZE];
         sprintf(errormsg,"Unknown command: %s\n",command);
         send(client_fd,errormsg, strlen(errormsg),0);
+        if (case_on){
+            char casemsg[BUFFER_SIZE];
+            sprintf(casemsg,"You are in case sensitive mode");
+            send(client_fd,casemsg, strlen(casemsg),0);
+        }
         incorrect_lines_received++;
     }
 }
